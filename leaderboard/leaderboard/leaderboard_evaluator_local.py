@@ -291,7 +291,7 @@ class LeaderboardEvaluator(object):
             print(f"\n{traceback.format_exc()}\033[0m")
 
             entry_status, crash_message = FAILURE_MESSAGES["Simulation"]
-            self._register_statistics(config.index, entry_status, crash_message)
+            self._register_statistics("", config.index, entry_status, crash_message)
             self._cleanup()
             return True
 
@@ -380,6 +380,11 @@ class LeaderboardEvaluator(object):
 
             entry_status, crash_message = FAILURE_MESSAGES["Agent_runtime"]
 
+        except RuntimeError as e:
+            print("\n\033[91mRuntime error during the simulation:")
+            print(f"\n{traceback.format_exc()}\033[0m")
+            entry_status, crash_message = FAILURE_MESSAGES["Simulation"]
+
         except Exception:
             print("\n\033[91mError during the simulation:")
             print(f"\n{traceback.format_exc()}\033[0m")
@@ -410,7 +415,7 @@ class LeaderboardEvaluator(object):
         """
         Run the challenge mode
         """
-        route_indexer = RouteIndexer(args.routes, args.repetitions, args.routes_subset)
+        route_indexer = RouteIndexer(args.routes, args.repetitions, args.routes_subset, args.scenario_limit)
 
         if args.resume:
             resume = route_indexer.validate_and_resume(args.checkpoint)
@@ -477,6 +482,8 @@ def main():
                         help='Execute a specific set of routes')
     parser.add_argument('--repetitions', type=int, default=1,
                         help='Number of repetitions per route.')
+    parser.add_argument('--scenario-limit', type=int, default=None,
+                        help='Maximum number of scenarios to run (default: None, run all scenarios)')
 
     # agent-related options
     parser.add_argument("-a", "--agent", type=str,

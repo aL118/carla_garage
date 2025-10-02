@@ -214,3 +214,4 @@ carla/
 my_dump/
 pretrained_models/
 debug_output/
+debug_output_noframes/

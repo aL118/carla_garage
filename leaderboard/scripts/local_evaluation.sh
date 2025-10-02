@@ -12,12 +12,12 @@ export ROUTES=${WORK_DIR}/leaderboard/data/bench2drive220.xml
 export REPETITIONS=1
 
 export CHALLENGE_TRACK_CODENAME=SENSORS
-export CHECKPOINT_ENDPOINT=${WORK_DIR}/results/transfuser_neat.json
+export CHECKPOINT_ENDPOINT=${WORK_DIR}/results/carla_garage_b2d.json
 export TEAM_AGENT=${WORK_DIR}/team_code/sensor_agent.py
 
 export TEAM_CONFIG=${WORK_DIR}/pretrained_models/all_towns
 
-export DEBUG_CHALLENGE=1
+export DEBUG_CHALLENGE=1 # set to 1 to save debug images and measurements
 export RESUME=1
 export DATAGEN=0
 export PORT=2000
@@ -83,6 +83,7 @@ python -u ${LEADERBOARD_ROOT}/leaderboard/leaderboard_evaluator_local.py \
 --agent-config=${TEAM_CONFIG} \
 --debug=${DEBUG_CHALLENGE} \
 --port=${PORT} \
+--scenario-limit=10 \
 --resume=${RESUME} > $WORK_DIR/logs/evaluation.log 2>&1 &
 
 EVALUATOR_PID=$!

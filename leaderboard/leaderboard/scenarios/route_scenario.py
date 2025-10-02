@@ -81,6 +81,7 @@ class RouteScenario(BasicScenario):
         self.list_scenarios = []
         self.occupied_parking_locations = []
         self.available_parking_locations = []
+        self._parked_ids = []
 
         scenario_configurations = self._filter_scenarios(config.scenario_configs)
         self.scenario_configurations = scenario_configurations
@@ -93,7 +94,6 @@ class RouteScenario(BasicScenario):
         if debug_mode>0:
             self._draw_waypoints(self.route, vertical_shift=0.1, size=0.1, downsample=10)
 
-        self._parked_ids = []
         self._get_parking_slots()
 
         super(RouteScenario, self).__init__(
@@ -490,5 +490,8 @@ class RouteScenario(BasicScenario):
         """
         Remove all actors upon deletion
         """
-        self.client.apply_batch([carla.command.DestroyActor(x) for x in self._parked_ids])
+        if self._parked_ids:
+            self.client.apply_batch([carla.command.DestroyActor(x) for x in self._parked_ids])
+        else:
+            print("No parked vehicles to destroy")
         self.remove_all_actors()

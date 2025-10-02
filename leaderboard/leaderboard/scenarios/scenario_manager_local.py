@@ -155,8 +155,12 @@ class ScenarioManager(object):
         self._scenario_thread = threading.Thread(target=self.build_scenarios_loop, args=(self._debug_mode > 0, ))
         self._scenario_thread.start()
 
-        while self._running:
-            self._tick_scenario()
+        try:
+            while self._running:
+                self._tick_scenario()
+        finally:
+            # Ensure background thread is signaled to stop on ANY exception
+            self._running = False
 
     def _tick_scenario(self):
         """
@@ -267,8 +271,12 @@ class ScenarioManager(object):
 
         # Make sure the scenario thread finishes to avoid blocks
         self._running = False
-        self._scenario_thread.join()
-        self._scenario_thread = None
+        if self._scenario_thread is not None:
+            # Wait for background thread with timeout to avoid hanging forever
+            self._scenario_thread.join(timeout=5.0)
+            if self._scenario_thread.is_alive():
+                print("\033[93m⚠ Warning: Background scenario thread did not terminate within timeout\033[0m")
+            self._scenario_thread = None
 
     def compute_duration_time(self):
         """

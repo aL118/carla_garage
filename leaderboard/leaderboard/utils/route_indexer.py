@@ -8,7 +8,7 @@ from leaderboard.utils.checkpoint_tools import fetch_dict
 
 
 class RouteIndexer():
-    def __init__(self, routes_file, repetitions, routes_subset):
+    def __init__(self, routes_file, repetitions, routes_subset, scenario_limit=None):
         self._configs_dict = OrderedDict()
         self._configs_list = []
         self.index = 0
@@ -23,6 +23,11 @@ class RouteIndexer():
                 self._configs_dict['{}.{}'.format(config.name, repetition)] = copy.copy(config)
 
         self._configs_list = list(self._configs_dict.values())
+
+        # Apply scenario limit if specified
+        if scenario_limit is not None and scenario_limit > 0:
+            self._configs_list = self._configs_list[:scenario_limit]
+            self.total = min(self.total, scenario_limit)
 
 
     def peek(self):

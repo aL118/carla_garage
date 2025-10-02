@@ -663,7 +663,8 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
         print('Creeping stopped by safety box. Step: ', self.step)
         throttle = 0.0
         brake = True
-        self.force_move = self.config.creep_duration
+        # Decrement instead of resetting to avoid infinite loop (probably doesn't affect anything)
+        self.force_move -= 1 # self.config.creep_duration
 
     if self.stop_sign_controller:
       if stop_for_stop_sign:
