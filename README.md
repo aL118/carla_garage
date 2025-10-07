@@ -175,6 +175,8 @@ The dataset provided in this repository is not perfect. At some point while impr
 
  ## Training
 
+Issues with loading huggingface model. Manually copied config from here: https://huggingface.co/prajjwal1/bert-medium/blob/main/config.json
+
 Agents are trained via the file [train.py](team_code/train.py). Examples of how to use it are provided for [shell](team_code/shell_train.sh) and [SLURM](team_code/slurm_train.sh). You need to activate the garage conda environment before running it. It first sets the relevant environment variables and then launches the training with torchrun. Torchrun is a pytorch tool that handles multi-gpu training. If you want to debug on a single gpu simply set --nproc_per_node=1. The training script has many options to configure your training, you can list them with python train.py --help or look through the code. The most important ones are:
 
 ```Shell

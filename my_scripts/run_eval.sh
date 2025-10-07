@@ -36,5 +36,5 @@ echo "Number of GPUS: $NUM_GPUS"
 
 bash /fs/nexus-scratch/aliu1237/carla_garage/leaderboard/scripts/local_evaluation.sh
 
-## sbatch -J test eval_baseline.sh
+## sbatch -J test run_eval.sh
 ## /fs/nexus-projects/sim2real/

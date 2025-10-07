@@ -810,7 +810,7 @@ class GlobalConfig:
     # -----------------------------------------------------------------------------
     # PlanT
     # -----------------------------------------------------------------------------
-    self.use_plant = False
+    self.use_plant = True
     self.plant_precision_pos = 7  # 7: 0.5 meters
     self.plant_precision_angle = 4  # 4: 1,875 km/h
     self.plant_precision_speed = 5  # 5: 22.5 degrees
@@ -818,7 +818,7 @@ class GlobalConfig:
     self.plant_object_types = 6  # vehicle, pedestrian, traffic light, stop sign, route, other
     self.plant_num_attributes = 7  # x,y, extent x, extent y,yaw,speed, brake, (class)
     # Options: prajjwal1/bert-tiny, prajjwal1/bert-mini, prajjwal1/bert-small, prajjwal1/bert-medium
-    self.plant_hf_checkpoint = 'prajjwal1/bert-medium'
+    self.plant_hf_checkpoint = '/fs/nexus-scratch/aliu1237/carla_garage/bert-medium-config.json'
     self.plant_embd_pdrop = 0.1
     self.plant_pretraining = None
     self.plant_max_speed_pred = 60.0  # Maximum speed we classify when forcasting cars.

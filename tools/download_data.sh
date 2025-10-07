@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # Default directories
-DEFAULT_DOWNLOAD_DIR="../data"
-DEFAULT_EXTRACT_DIR="../data"
+DEFAULT_DOWNLOAD_DIR="/fs/nexus-projects/sim2real/aliu/carla_garage_data"
+DEFAULT_EXTRACT_DIR="/fs/nexus-projects/sim2real/aliu/carla_garage_data"
 
 # Parse command-line arguments
 DOWNLOAD_DIR="${1:-$DEFAULT_DOWNLOAD_DIR}"

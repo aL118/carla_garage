@@ -138,6 +138,8 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
           future_box = []
           measurement = []
 
+          skip_sample = False  # Flag to skip samples with missing files
+
           # Loads the current (and past) frames (if seq_len > 1)
           for idx in range(self.config.seq_len):
             if not self.config.use_plant:
@@ -158,8 +160,21 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
 
             forcast_step = int(config.forcast_time / (config.data_save_freq / config.carla_fps) + 0.5)
 
-            box.append(route_dir + '/boxes' + (f'/{(seq + idx):04}.json.gz'))
-            future_box.append(route_dir + '/boxes' + (f'/{(seq + idx + forcast_step):04}.json.gz'))
+            box_path = route_dir + '/boxes' + (f'/{(seq + idx):04}.json.gz')
+            future_box_path = route_dir + '/boxes' + (f'/{(seq + idx + forcast_step):04}.json.gz')
+
+            ################ COMMENT OUT IF RUNNING FULL DATASET ################
+            # Skip this sample if required box files don't exist (for subset datasets)
+            if not os.path.isfile(box_path) or not os.path.isfile(future_box_path):
+              skip_sample = True
+              break
+            #####################################################################
+            box.append(box_path)
+            future_box.append(future_box_path)
+
+          # Skip this sample if any required files are missing
+          if skip_sample:
+            continue
 
           # we only store the root and compute the file name when loading,
           # because storing 40 * long string per sample can go out of memory.
@@ -483,7 +498,7 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
       if self.config.use_semantic:
         loaded_semantics.append(semantics_i)
         loaded_semantics_augmented.append(semantics_augmented_i)
-      if self.config.use_bev_semantic:
+      if self.config.use_bev_semantic and not self.config.use_plant:
         # NOTE the BEV label can unfortunately only be saved up to 2.0 ppm resolution. We upscale it here.
         # If you change these values you might need to change the up-scaling as well.
         assert self.config.pixels_per_meter == 4.0
