@@ -37,6 +37,7 @@ def main():
   parser = argparse.ArgumentParser()
   parser.add_argument('--xml', type=str, default='../leaderboard/data/longest6.xml', help='Routes file.')
   parser.add_argument('--results', type=str, required=True, help='Folder with json files to be parsed')
+  parser.add_argument('--subset', action='store_true', default=False, help='Ignore incomplete routes.')
   parser.add_argument('--strict',
                       action='store_true',
                       default=False,
@@ -239,7 +240,7 @@ def main():
   avg_km_h_speed = total_km_driven / total_driven_hours
 
 
-  if total_number_of_routes % len(route_matching) != 0:
+  if not args.subset and total_number_of_routes % len(route_matching) != 0:
     print('Error: The number of completed routes (' + str(total_number_of_routes) +
           ') is not a multiple of the total routes (' + str(len(route_matching)) +
           '). Check if there are missing results.',

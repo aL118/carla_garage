@@ -45,14 +45,14 @@ export HF_ENDPOINT=https://huggingface.co
 export OMP_NUM_THREADS=16  # Limits pytorch to spawn at most num cpus cores threads
 export OPENBLAS_NUM_THREADS=1  # Shuts off numpy multithreading, to avoid threads spawning other threads.
 
-# Stage 1
+# Stage 2
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nnodes=1 --nproc_per_node=8 --max_restarts=1 --rdzv_id=$SLURM_JOB_ID --rdzv_backend=c10d \
-    /fs/nexus-scratch/aliu1237/carla_garage/team_code/train.py --id train1_full --use_disk_cache 1 --seed 0 --epochs 47 --batch_size 512 \
-    --lr 1e-4 --setting all \
+    /fs/nexus-scratch/aliu1237/carla_garage/team_code/train.py --id train2_only_full --crop_image 1 --seed 2 --epochs 30 --batch_size 10 \
+    --lr 1.875e-4 --setting all  --num_repetitions 1 \
     --root_dir /fs/nexus-projects/sim2real/aliu/carla_garage_data \
     --logdir /fs/nexus-scratch/aliu1237/carla_garage/logs \
-    --use_controller_input_prediction 0 --use_wp_gru 1 --continue_epoch 0 --cpu_cores 64 --num_repetitions 1 \
-    --schedule_reduce_epoch_01 45 --weight_decay 0.1 --use_grad_clip 1 --use_optim_groups 1 --use_plant 1
+    --use_controller_input_prediction 1 --use_wp_gru 0 --use_discrete_command 1 --use_tp 1 --tp_attention 0 --continue_epoch 0 --cpu_cores 64 \
+    --max_x 32 --crop_bev_height_only_from_behind 1 --lidar_resolution_height 256  --use_plant 0 --dataset_cache_name dataset_cache_384 
 
 ## sbatch -J test run_train.sh
 ## /fs/nexus-projects/sim2real/
