@@ -371,6 +371,11 @@ def main():
                       type=str,
                       default=str(config.compile_mode),
                       help='compile mode for torch compile')
+  parser.add_argument('--dropout',
+                      type=float,
+                      default=float(config.dropout),
+                      help='Dropout rate for non-RGB data (lidar, bev, auxiliary). 0 means no dropout, '
+                      '0.01 means dropout every 100 iterations.')
 
   args = parser.parse_args()
   args.logdir = os.path.join(args.logdir, args.id)
@@ -746,6 +751,15 @@ class Engine(object):
 
   def load_data_compute_loss(self, data, validation=False):
     # Validation = True will compute additional metrics not used for optimization
+
+    # Apply dropout to non-RGB data if enabled and not validating
+    apply_dropout = False
+    if not validation and self.config.dropout > 0:
+      # dropout rate is 1 / frequency. E.g., 0.01 means every 100 iterations
+      dropout_frequency = int(1.0 / self.config.dropout)
+      if self.step > 0 and self.step % dropout_frequency == 0:
+        apply_dropout = True
+
     # Load data used in both methods
     future_bounding_box_label = None
     if self.config.detect_boxes or self.config.use_plant:
@@ -809,6 +823,7 @@ class Engine(object):
     elif self.args.backbone in ('transFuser', 'aim', 'bev_encoder'):
       checkpoint = data['route'][:, :self.config.predict_checkpoint_len].to(self.device, dtype=torch.float32)
       rgb = data['rgb'].to(self.device, dtype=torch.float32)
+
       if self.config.use_semantic:
         semantic_label = data['semantic'].to(self.device, dtype=torch.long)
       else:
@@ -825,6 +840,25 @@ class Engine(object):
         lidar = data['temporal_lidar'].to(self.device, dtype=torch.float32)
       else:
         lidar = data['lidar'].to(self.device, dtype=torch.float32)
+
+      # Apply dropout to non-RGB data (zero out lidar, bev, and auxiliary information)
+      if apply_dropout:
+        lidar = torch.zeros_like(lidar)
+        if semantic_label is not None:
+          semantic_label = torch.zeros_like(semantic_label)
+        if bev_semantic_label is not None:
+          bev_semantic_label = torch.zeros_like(bev_semantic_label)
+        if depth_label is not None:
+          depth_label = torch.zeros_like(depth_label)
+        # Also zero out bounding box data if present
+        if self.config.detect_boxes:
+          bb_center_heatmap = torch.zeros_like(bb_center_heatmap)
+          bb_wh = torch.zeros_like(bb_wh)
+          bb_yaw_class = torch.zeros_like(bb_yaw_class)
+          bb_yaw_res = torch.zeros_like(bb_yaw_res)
+          bb_offset = torch.zeros_like(bb_offset)
+          bb_velocity = torch.zeros_like(bb_velocity)
+          bb_brake_target = torch.zeros_like(bb_brake_target)
 
       pred_wp,\
       pred_target_speed,\

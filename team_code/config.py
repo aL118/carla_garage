@@ -527,6 +527,7 @@ class GlobalConfig:
     self.use_twohot_target_speeds = True  # Whether to use two hot encoding for the target speed classification
     self.compile = False  # Whether to apply torch.compile to the model.
     self.compile_mode = 'default'  # Compile mode for torch.compile
+    self.dropout = 0.0  # Dropout rate for non-RGB data (lidar, bev, auxiliary). 0.01 means dropout every 100 iterations.
 
     # -----------------------------------------------------------------------------
     # PID controller
