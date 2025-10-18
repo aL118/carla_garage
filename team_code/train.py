@@ -8,6 +8,7 @@ train.py --logdir /path/to/logdir --root_dir /path/to/dataset_root/ --id exp_000
 
 import argparse
 import json
+import sys
 import os
 import pathlib
 import datetime
@@ -33,6 +34,15 @@ from config import GlobalConfig
 from model import LidarCenterNet
 from data import CARLA_Data
 from plant import PlanT
+
+try:
+  parent_dir = os.path.dirname(os.path.dirname(__file__))
+  sys.path.insert(0, parent_dir)
+  from sim2drive.model import Sim2DriveModel
+  DINOV2_AVAILABLE = True
+except ImportError as e:
+  DINOV2_AVAILABLE = False
+  print(f"Warning: sim2drive module not found. DINOv2 backbone will not be available. Error: {e}")
 
 jsonpickle_numpy.register_handlers()
 jsonpickle.set_encoder_options('json', sort_keys=True, indent=4)
@@ -91,13 +101,12 @@ def main():
   parser.add_argument('--backbone',
                       type=str,
                       default=config.backbone,
-                      help='Which fusion backbone to use. Options: transFuser, aim, bev_encoder')
-  parser.add_argument(
-      '--image_architecture',
-      type=str,
-      default=config.image_architecture,
-      help='Which architecture to use for the image branch. resnet34, regnety_032, hf-hub:apple/mobileclip_s0_timm etc.'
-      'All options of the TIMM lib can be used but some might need adjustments to the backbone.')
+                      help='Which fusion backbone to use. Options: transFuser, aim, bev_encoder, transFuser_dinov2')
+  parser.add_argument('--image_architecture',
+                      type=str,
+                      default=config.image_architecture,
+                      help='Which architecture to use for the image branch. resnet34, regnety_032, hf-hub:apple/mobileclip_s0_timm etc.'
+                      'All options of the TIMM lib can be used but some might need adjustments to the backbone.')
   parser.add_argument('--lidar_architecture',
                       type=str,
                       default=config.lidar_architecture,
@@ -377,6 +386,24 @@ def main():
                       help='Dropout rate for non-RGB data (lidar, bev, auxiliary). 0 means no dropout, '
                       '0.01 means dropout every 100 iterations.')
 
+  # DINOv2 + Adapter arguments
+  parser.add_argument('--adapter_type',
+                      type=str,
+                      default='conv',
+                      help='Adapter type: mlp or conv (only used with transFuser_dinov2 backbone)')
+  parser.add_argument('--adapter_hidden_dim',
+                      type=int,
+                      default=64,
+                      help='Hidden dimension for adapter (only used with transFuser_dinov2 backbone)')
+  parser.add_argument('--adapter_dropout',
+                      type=float,
+                      default=0.1,
+                      help='Dropout rate for adapter (only used with transFuser_dinov2 backbone)')
+  parser.add_argument('--dinov2_model',
+                      type=str,
+                      default='dinov2_vitb14',
+                      help='DINOv2 model variant (only used with transFuser_dinov2 backbone)')
+
   args = parser.parse_args()
   args.logdir = os.path.join(args.logdir, args.id)
 
@@ -428,6 +455,15 @@ def main():
 
   # Configure config. Converts all arguments into config attributes
   config.initialize(**vars(args))
+
+  # Add DINOv2-specific config attributes if using DINOv2 backbone
+  if config.backbone == 'transFuser_dinov2':
+    config.adapter_type = args.adapter_type
+    config.adapter_hidden_dim = args.adapter_hidden_dim
+    config.adapter_dropout = args.adapter_dropout
+    config.dinov2_model = args.dinov2_model
+    config.dinov2_pretrained = True
+    config.freeze_dinov2 = True
 
   config.debug = int(os.environ.get('DEBUG_CHALLENGE', 0))
   # Before normalizing we need to set the losses we don't use to 0
@@ -530,6 +566,16 @@ def main():
   # Create model and optimizers
   if config.use_plant:
     model = PlanT(config)
+  elif config.backbone == 'transFuser_dinov2':
+    if not DINOV2_AVAILABLE:
+      raise RuntimeError("DINOv2 backbone requested but sim2drive module not found. "
+                        "Please check that /sim2drive/ directory exists.")
+    if rank == 0:
+      print("Using DINOv2 + Adapter backbone")
+      print(f"  Adapter type: {config.adapter_type}")
+      print(f"  Adapter hidden dim: {config.adapter_hidden_dim}")
+      print(f"  DINOv2 model: {config.dinov2_model}")
+    model = Sim2DriveModel(config, device)
   else:
     model = LidarCenterNet(config)
 
@@ -571,6 +617,8 @@ def main():
   find_unused_parameters = False
   if config.use_plant:
     find_unused_parameters = True
+  if config.backbone == 'transFuser_dinov2':
+    find_unused_parameters = True  # DINOv2 model has unused parameters (adapter, discriminator, etc.)
   model = torch.nn.parallel.DistributedDataParallel(model,
                                                     device_ids=None,
                                                     output_device=None,
@@ -820,7 +868,7 @@ class Engine(object):
                                     stop_hazard=stop_hazard,
                                     junction=junction,
                                     velocity=ego_vel)
-    elif self.args.backbone in ('transFuser', 'aim', 'bev_encoder'):
+    elif self.args.backbone in ('transFuser', 'aim', 'bev_encoder', 'transFuser_dinov2'):
       checkpoint = data['route'][:, :self.config.predict_checkpoint_len].to(self.device, dtype=torch.float32)
       rgb = data['rgb'].to(self.device, dtype=torch.float32)
 
@@ -868,7 +916,8 @@ class Engine(object):
       pred_depth, \
       pred_bounding_box, _, \
       pred_wp_1, \
-      selected_path = self.model(rgb=rgb,
+      selected_path, \
+      pred_domain = self.model(rgb=rgb,
                           lidar_bev=lidar,
                           target_point=target_point,
                           ego_vel=ego_vel,
@@ -897,6 +946,9 @@ class Engine(object):
                             pred_bev_semantic=pred_bev_semantic,
                             pred_depth=pred_depth,
                             pred_bounding_box=pred_bounding_box,
+                            pred_wp_1=pred_wp_1,
+                            selected_path=selected_path,
+                            pred_domain=pred_domain,
                             waypoint_label=ego_waypoint,
                             target_speed_label=target_speed,
                             checkpoint_label=checkpoint,
@@ -911,9 +963,7 @@ class Engine(object):
                             velocity_label=bb_velocity,
                             brake_target_label=bb_brake_target,
                             pixel_weight_label=bb_pixel_weight,
-                            avg_factor_label=bb_avg_factor,
-                            pred_wp_1=pred_wp_1,
-                            selected_path=selected_path)
+                            avg_factor_label=bb_avg_factor)
 
     # Compute metrics for logging
     metrics = {}

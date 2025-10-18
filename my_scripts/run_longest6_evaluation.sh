@@ -45,22 +45,23 @@ export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI
 export PYTHONPATH="${CARLA_ROOT}/PythonAPI/carla/":"${SCENARIO_RUNNER_ROOT}":"${LEADERBOARD_ROOT}":${PYTHONPATH}
 
 export ROUTES=${WORK_DIR}/leaderboard/data/longest6.xml
+# export ROUTES=${WORK_DIR}/leaderboard/data/bench2drive220.xml
 export REPETITIONS=1
 
 export CHALLENGE_TRACK_CODENAME=SENSORS
-export RUN_NAME="pretrained"
+export RUN_NAME="adapt_extr_test"
 export CHECKPOINT_ENDPOINT=${WORK_DIR}/results/${RUN_NAME}.json
 
 export TEAM_AGENT=${WORK_DIR}/team_code/sensor_agent.py
-export TEAM_CONFIG=${WORK_DIR}/pretrained_models/all_towns
-# export TEAM_CONFIG=${WORK_DIR}/logs/${RUN_NAME}
+# export TEAM_CONFIG=${WORK_DIR}/pretrained_models/all_towns
+export TEAM_CONFIG=${WORK_DIR}/logs/${RUN_NAME}
 
 export DEBUG_CHALLENGE=1 # set to 1 to save debug images and measurements
 export RESUME=0
 export DATAGEN=0
 export PORT=2000
 
-export SAVE_PATH="$WORK_DIR/${RUN_NAME}_output" # uncomment for debug output
+export SAVE_PATH="$WORK_DIR/my_dump/${RUN_NAME}_output" # uncomment for debug output
 
 # Cleanup function with progress
 cleanup() {
@@ -121,8 +122,8 @@ python -u ${LEADERBOARD_ROOT}/leaderboard/leaderboard_evaluator_local.py \
 --agent-config=${TEAM_CONFIG} \
 --debug=${DEBUG_CHALLENGE} \
 --port=${PORT} \
---scenario-limit=10 \
---resume=${RESUME} > $WORK_DIR/logs/evaluation.log 2>&1 &
+--scenario-limit=3 \
+--resume=${RESUME} > $WORK_DIR/logs/${RUN_NAME}_evaluation.log 2>&1 &
 
 EVALUATOR_PID=$!
 echo "Evaluator started with PID: $EVALUATOR_PID"

@@ -857,3 +857,13 @@ class GlobalConfig:
     self.data_roots = []
     for td_path in self.root_dir:
       self.data_roots = self.data_roots + [os.path.join(td_path, name) for name in os.listdir(td_path)]
+
+    # -----------------------------------------------------------------------------
+    # Sim2Drive Adapter + Extractor
+    # -----------------------------------------------------------------------------
+    self.adapter_type = None
+    self.adapter_hidden_dim = None
+    self.adapter_dropout = None
+    self.dinov2_model = None
+    self.dinov2_pretrained = True
+    self.freeze_dinov2 = True

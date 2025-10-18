@@ -143,7 +143,13 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
           # Need to convert it otherwise parameters will load wrong.
           net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net)
         state_dict = torch.load(os.path.join(self.config_path, file), map_location=self.device)
-        net.load_state_dict(state_dict, strict=True)
+        # Filter out adapter, extractor, and discriminator keys if they exist (for domain adaptation models)
+        filtered_state_dict = {k: v for k, v in state_dict.items()
+                              if not k.startswith('adapter.') and
+                              not k.startswith('extractor.') and
+                              not k.startswith('discriminator.') and
+                              not k.startswith('prediction_head.')}
+        net.load_state_dict(filtered_state_dict, strict=False)
         net.cuda(device=self.device)
         net.eval()
 
@@ -513,7 +519,7 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
     bounding_boxes = []
     wp_selected = None
     for i in range(self.model_count):
-      if self.config.backbone in ('transFuser', 'aim', 'bev_encoder'):
+      if self.config.backbone in ('transFuser', 'aim', 'bev_encoder', 'transFuser_dinov2'):
         pred_wp, \
         pred_target_speed, \
         pred_checkpoint, \
