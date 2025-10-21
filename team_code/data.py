@@ -34,9 +34,11 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
                estimate_sem_distribution=False,
                shared_dict=None,
                rank=0,
-               validation=False):
+               validation=False,
+               rgb_real=False):
     self.config = config
     self.validation = validation
+    self.rgb_real = rgb_real  # True for real (NavSim) data, False for sim (CARLA) data
     assert config.img_seq_len == 1
 
     self.data_cache = shared_dict
@@ -58,6 +60,7 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
     self.future_boxes = []
     self.measurements = []
     self.sample_start = []
+    self.is_real_data = []  # Track whether sample is from real (NavSim) or sim (CARLA) data
 
     self.temporal_lidars = []
     self.temporal_measurements = []
@@ -80,15 +83,22 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
       routes = next(os.walk(sub_root))[1]
 
       for route in routes:  # loop over individual routes within this scenario folder
-        repetition = int(re.search('_Rep(\\d+)', route).group(1))
-        if repetition >= self.config.num_repetitions:
-          continue
+        # For CARLA data: check repetition and town filters
+        # For NavSim data: skip these checks (doesn't have Town/Rep in name)
+        rep_match = re.search('_Rep(\\d+)', route)
+        town_match = re.search('Town(\\d+)', route)
 
-        town = int(re.search('Town(\\d+)', route).group(1))
-        if self.validation and (town not in self.config.val_towns):
-          continue
-        elif not self.validation and (town in self.config.val_towns):
-          continue
+        if rep_match:
+          repetition = int(rep_match.group(1))
+          if repetition >= self.config.num_repetitions:
+            continue
+
+        if town_match:
+          town = int(town_match.group(1))
+          if self.validation and (town not in self.config.val_towns):
+            continue
+          elif not self.validation and (town in self.config.val_towns):
+            continue
 
         route_dir = sub_root + '/' + route
         total_routes += 1
@@ -178,7 +188,11 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
 
           # we only store the root and compute the file name when loading,
           # because storing 40 * long string per sample can go out of memory.
-          measurement.append(route_dir + '/measurements')
+          # For NavSim, store path to records.json.gz; for CARLA, store measurements directory
+          if self.rgb_real:
+            measurement.append(route_dir + '/records.json.gz')
+          else:
+            measurement.append(route_dir + '/measurements')
 
           if estimate_class_distributions:
             with gzip.open(measurement[-1] + f'/{(seq):04}.json.gz', 'rt', encoding='utf-8') as f:
@@ -216,6 +230,7 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
           self.future_boxes.append(future_box)
           self.measurements.append(measurement)
           self.sample_start.append(seq)
+          self.is_real_data.append(self.rgb_real)
 
     if estimate_class_distributions:
       classes_target_speeds = np.unique(self.speed_distribution)
@@ -276,11 +291,16 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
     self.temporal_lidars = np.array(self.temporal_lidars).astype(np.string_)
     self.temporal_measurements = np.array(self.temporal_measurements).astype(np.string_)
     self.sample_start = np.array(self.sample_start)
+    self.is_real_data = np.array(self.is_real_data, dtype=np.bool_)
     if rank == 0:
       print(f'Loading {len(self.lidars)} lidars from {len(root)} folders')
       print('Total amount of routes:', total_routes)
       print('Skipped routes:', skipped_routes)
       print('Trainable routes:', trainable_routes)
+      num_real_samples = np.sum(self.is_real_data)
+      num_sim_samples = len(self.is_real_data) - num_real_samples
+      print(f'Real (NavSim) samples: {num_real_samples}')
+      print(f'Sim (CARLA) samples: {num_sim_samples}')
 
   def __len__(self):
     """Returns the length of the dataset. """
@@ -329,37 +349,79 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
     # convert them back to utf-8 strings
 
     # Since we load measurements for future time steps, we load and store them separately
-    for i in range(self.config.seq_len):
-      measurement_file = str(measurements[0], encoding='utf-8') + (f'/{(sample_start + i):04}.json.gz')
-      if (not self.data_cache is None) and (measurement_file in self.data_cache):
-        measurements_i = self.data_cache[measurement_file]
+    # NavSim uses records.json.gz, CARLA uses individual measurement files
+    measurement_path = str(measurements[0], encoding='utf-8')
+    is_navsim = measurement_path.endswith('.json.gz')  # NavSim path points to records.json.gz
+
+    if is_navsim:
+      # Load NavSim records.json.gz once
+      if (not self.data_cache is None) and (measurement_path in self.data_cache):
+        records_data = self.data_cache[measurement_path]
       else:
-        with gzip.open(measurement_file, 'rt', encoding='utf-8') as f1:
-          measurements_i = ujson.load(f1)
-
+        with gzip.open(measurement_path, 'rt', encoding='utf-8') as f1:
+          records_data = ujson.load(f1)
         if not self.data_cache is None:
-          self.data_cache[measurement_file] = measurements_i
+          self.data_cache[measurement_path] = records_data
 
-      loaded_measurements.append(measurements_i)
+      route_ego = records_data['route_ego']
 
-    if self.config.use_wp_gru:
-      end = self.config.pred_len + self.config.seq_len
-      start = self.config.seq_len
+      # Load current frame measurements
+      for i in range(self.config.seq_len):
+        idx = sample_start + i
+        if idx < len(route_ego):
+          waypoint = route_ego[idx]
+          # Create ego_matrix with position in last column
+          ego_matrix = [[1, 0, 0, waypoint[0]],
+                       [0, 1, 0, waypoint[1]],
+                       [0, 0, 1, waypoint[2]],
+                       [0, 0, 0, 1]]
+          loaded_measurements.append({'ego_matrix': ego_matrix})
+
+      # Load future waypoints for prediction
+      if self.config.use_wp_gru:
+        end = self.config.pred_len + self.config.seq_len
+        start = self.config.seq_len
+      else:
+        end = 0
+        start = 0
+      for i in range(start, end, self.config.wp_dilation):
+        idx = sample_start + i
+        if idx < len(route_ego):
+          waypoint = route_ego[idx]
+          ego_matrix = [[1, 0, 0, waypoint[0]],
+                       [0, 1, 0, waypoint[1]],
+                       [0, 0, 1, waypoint[2]],
+                       [0, 0, 0, 1]]
+          loaded_measurements.append({'ego_matrix': ego_matrix})
     else:
-      end = 0
-      start = 0
-    for i in range(start, end, self.config.wp_dilation):
-      measurement_file = str(measurements[0], encoding='utf-8') + (f'/{(sample_start + i):04}.json.gz')
-      if (not self.data_cache is None) and (measurement_file in self.data_cache):
-        measurements_i = self.data_cache[measurement_file]
+      # CARLA: load individual measurement files
+      for i in range(self.config.seq_len):
+        measurement_file = measurement_path + (f'/{(sample_start + i):04}.json.gz')
+        if (not self.data_cache is None) and (measurement_file in self.data_cache):
+          measurements_i = self.data_cache[measurement_file]
+        else:
+          with gzip.open(measurement_file, 'rt', encoding='utf-8') as f1:
+            measurements_i = ujson.load(f1)
+          if not self.data_cache is None:
+            self.data_cache[measurement_file] = measurements_i
+        loaded_measurements.append(measurements_i)
+
+      if self.config.use_wp_gru:
+        end = self.config.pred_len + self.config.seq_len
+        start = self.config.seq_len
       else:
-        with gzip.open(measurement_file, 'rt', encoding='utf-8') as f1:
-          measurements_i = ujson.load(f1)
-
-        if not self.data_cache is None:
-          self.data_cache[measurement_file] = measurements_i
-
-      loaded_measurements.append(measurements_i)
+        end = 0
+        start = 0
+      for i in range(start, end, self.config.wp_dilation):
+        measurement_file = measurement_path + (f'/{(sample_start + i):04}.json.gz')
+        if (not self.data_cache is None) and (measurement_file in self.data_cache):
+          measurements_i = self.data_cache[measurement_file]
+        else:
+          with gzip.open(measurement_file, 'rt', encoding='utf-8') as f1:
+            measurements_i = ujson.load(f1)
+          if not self.data_cache is None:
+            self.data_cache[measurement_file] = measurements_i
+        loaded_measurements.append(measurements_i)
 
     for i in range(self.config.seq_len):
       if self.config.use_plant:
@@ -749,6 +811,9 @@ class CARLA_Data(Dataset):  # pylint: disable=locally-disabled, invalid-name
                                                   y_augmentation=aug_translation,
                                                   yaw_augmentation=aug_rotation)
     data['target_point_next'] = target_point_next
+
+    # Add rgb_real label: 1 for real (NavSim) data, 0 for simulated (CARLA) data
+    data['rgb_real'] = float(self.is_real_data[index])
 
     return data
 

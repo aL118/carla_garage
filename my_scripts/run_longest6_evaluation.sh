@@ -49,7 +49,7 @@ export ROUTES=${WORK_DIR}/leaderboard/data/longest6.xml
 export REPETITIONS=1
 
 export CHALLENGE_TRACK_CODENAME=SENSORS
-export RUN_NAME="adapt_extr_test"
+export RUN_NAME="adapt_extr_stage2_epoch23"
 export CHECKPOINT_ENDPOINT=${WORK_DIR}/results/${RUN_NAME}.json
 
 export TEAM_AGENT=${WORK_DIR}/team_code/sensor_agent.py

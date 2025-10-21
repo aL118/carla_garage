@@ -361,7 +361,7 @@ def log(pkl_file: str):
     print(f"GIF saved to: {output_gif_path}")
 
 if __name__ == "__main__":
-    data = load_navsim_records("/fs/nexus-projects/sim2real/aliu/carla_garage_data/Accident/Town12_Rep0_10_0_route0_11_08_23_53_07/records.json.gz")
+    data = load_navsim_records("/fs/nexus-projects/sim2real/aliu/carla_garage_data/Accident/Town12_Rep0_10_0_route0_11_08_23_53_07/measurements/0000.json.gz")
     print(json.dumps(data, indent=2))
 
 """
@@ -402,5 +402,92 @@ if __name__ == "__main__":
     "num_frames": 686,
     "num_waypoints": 8
   }
+}
+
+/fs/nexus-projects/sim2real/aliu/carla_garage_data/Accident/Town12_Rep0_10_0_route0_11_08_23_53_07/measurements/0000.json.gz
+{
+  "pos_global": [
+    444.9840393066406,
+    6076.328125
+  ],
+  "theta": 2.6163088520381113,
+  "speed": 0.09185422956943512,
+  "target_speed": 10.0,
+  "speed_limit": 13.88888888888889,
+  "target_point": [
+    158.9305133346126,
+    -12.589032517913468
+  ],
+  "target_point_next": [
+    158.9305133346126,
+    -12.589032517913468
+  ],
+  "command": 4,
+  "next_command": 4,
+  "aim_wp": [
+    6.708056048994955,
+    -0.0594182356782277
+  ],
+  "route": [
+    [
+      6.800535143979041,
+      -0.061029597208248
+    ],
+    ...
+  ],
+  "route_original": [
+    [
+      6.800535143979041,
+      -0.061029597208248
+    ],
+    ...
+  ],
+  "changed_route": false,
+  "speed_reduced_by_obj_type": null,
+  "speed_reduced_by_obj_id": null,
+  "speed_reduced_by_obj_distance": null,
+  "steer": -0.021,
+  "throttle": 1.0,
+  "brake": false,
+  "control_brake": false,
+  "junction": false,
+  "vehicle_hazard": false,
+  "vehicle_affecting_id": null,
+  "light_hazard": false,
+  "walker_hazard": false,
+  "walker_affecting_id": null,
+  "stop_sign_hazard": false,
+  "stop_sign_close": false,
+  "walker_close": false,
+  "walker_close_id": null,
+  "angle": -0.005638866781919103,
+  "augmentation_translation": 0.7347016608122636,
+  "augmentation_rotation": -1.637834842528949,
+  "ego_matrix": [
+    [
+      -0.865118682384491,
+      -0.5014590620994568,
+      -0.010411522351205349,
+      444.9840393066406
+    ],
+    [
+      0.5014222860336304,
+      -0.8651813864707947,
+      0.006073912605643272,
+      6076.328125
+    ],
+    [
+      -0.012053674086928368,
+      3.408616976230405e-05,
+      0.9999273419380188,
+      359.0325012207031
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ]
 }
 """

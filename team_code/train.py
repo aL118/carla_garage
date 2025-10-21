@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset, Subset
 from torch.utils.tensorboard import SummaryWriter
 from torch.distributed.elastic.multiprocessing.errors import record
 from torch.distributed.optim import ZeroRedundancyOptimizer
@@ -87,7 +87,9 @@ def main():
                       '13_withheld: Do not train on Town 13. '
                       '12_only: Only trains with data from Town 12 '
                       'Withheld data is used for validation')
-  parser.add_argument('--root_dir', type=str, required=True, nargs='+', help='Root directory of your training data')
+  parser.add_argument('--root_dir', type=str, required=True, nargs='+', help='Root directory of your CARLA training data')
+  parser.add_argument('--navsim_path', type=str, default=None, help='Path to NavSim real data (e.g., /path/to/navsim_STRAIGHT). If specified, will be used as real data.')
+  parser.add_argument('--slicing_factor', type=int, default=1, help='Factor by which to slice the dataset. 1 means full dataset, 10 means every 10th sample.')
   parser.add_argument('--schedule_reduce_epoch_01',
                       type=int,
                       default=config.schedule_reduce_epoch_01,
@@ -542,16 +544,36 @@ def main():
       config.detailed_loss_weights[k] = config.detailed_loss_weights[k] * factor
 
   # Data, configures config. Create before the model
-  train_set = CARLA_Data(root=config.data_roots,
-                         config=config,
-                         estimate_class_distributions=config.estimate_class_distributions,
-                         estimate_sem_distribution=config.estimate_semantic_distribution,
-                         shared_dict=shared_dict,
-                         rank=rank,
-                         validation=False)
+  # Create CARLA (simulated) dataset with rgb_real=False
+  carla_train_set = CARLA_Data(root=config.data_roots,
+                               config=config,
+                               estimate_class_distributions=config.estimate_class_distributions,
+                               estimate_sem_distribution=config.estimate_semantic_distribution,
+                               shared_dict=shared_dict,
+                               rank=rank,
+                               validation=False,
+                               rgb_real=False)
+
+  # If NavSim path is provided, create NavSim (real) dataset with rgb_real=True
+  if args.navsim_path is not None:
+    navsim_roots = [os.path.join(args.navsim_path, name) for name in os.listdir(args.navsim_path)]
+    navsim_train_set = CARLA_Data(root=navsim_roots,
+                                  config=config,
+                                  estimate_class_distributions=False,
+                                  estimate_sem_distribution=False,
+                                  shared_dict=shared_dict,
+                                  rank=rank,
+                                  validation=False,
+                                  rgb_real=True)
+    # Concatenate CARLA and NavSim datasets
+    train_set = ConcatDataset([carla_train_set, navsim_train_set])
+    if rank == 0:
+      print(f'Combined dataset: {len(carla_train_set)} CARLA samples + {len(navsim_train_set)} NavSim samples = {len(train_set)} total')
+  else:
+    train_set = carla_train_set
 
   if args.setting != 'all':
-    val_set = CARLA_Data(root=config.data_roots, config=config, shared_dict=shared_dict, rank=rank, validation=True)
+    val_set = CARLA_Data(root=config.data_roots, config=config, shared_dict=shared_dict, rank=rank, validation=True, rgb_real=False)
   else:
     val_set = None
 
@@ -651,34 +673,43 @@ def main():
   g_cuda = torch.Generator(device='cpu')
   g_cuda.manual_seed(torch.initial_seed())
 
-  sampler_train = torch.utils.data.distributed.DistributedSampler(train_set,
+  # Apply slicing factor to reduce dataset size
+  n = args.slicing_factor  # Use slicing factor from command line args
+  subset_indices = range(0, len(train_set), n)
+  train_set_subset = Subset(train_set, subset_indices)
+
+  sampler_train = torch.utils.data.distributed.DistributedSampler(train_set_subset,
                                                                   shuffle=True,
                                                                   num_replicas=world_size,
                                                                   rank=rank,
                                                                   drop_last=True)
-  dataloader_train = DataLoader(train_set,
+  dataloader_train = DataLoader(train_set_subset,  # Fixed: use subset instead of full train_set
                                 sampler=sampler_train,
                                 batch_size=args.batch_size,
                                 worker_init_fn=seed_worker,
                                 generator=g_cuda,
                                 num_workers=num_workers,
-                                pin_memory=False,
-                                drop_last=True)
+                                pin_memory=False,  # Keep False to save memory - tight on GPU
+                                drop_last=True,
+                                persistent_workers=True)
 
   if args.setting != 'all':
-    sampler_val = torch.utils.data.distributed.DistributedSampler(val_set,
-                                                                  shuffle=True,
+    subset_indices = range(0, len(val_set), n)
+    val_set_subset = Subset(val_set, subset_indices)
+    sampler_val = torch.utils.data.distributed.DistributedSampler(val_set_subset,
+                                                                  shuffle=False,
                                                                   num_replicas=world_size,
                                                                   rank=rank,
                                                                   drop_last=True)
-    dataloader_val = DataLoader(val_set,
+    dataloader_val = DataLoader(val_set_subset,  # Fixed: use subset instead of full val_set
                                 sampler=sampler_val,
                                 batch_size=args.batch_size,
                                 worker_init_fn=seed_worker,
                                 generator=g_cuda,
                                 num_workers=num_workers,
-                                pin_memory=False,
-                                drop_last=True)
+                                pin_memory=False,  # Keep False to save memory - tight on GPU
+                                drop_last=True,
+                                persistent_workers=True)
   else:
     sampler_val, dataloader_val = None, None
 
@@ -868,6 +899,11 @@ class Engine(object):
                                     stop_hazard=stop_hazard,
                                     junction=junction,
                                     velocity=ego_vel)
+
+      # Plant model doesn't have discriminator or prediction head losses
+      disc_loss = None
+      anti_disc_loss = None
+      pred_loss = None
     elif self.args.backbone in ('transFuser', 'aim', 'bev_encoder', 'transFuser_dinov2'):
       checkpoint = data['route'][:, :self.config.predict_checkpoint_len].to(self.device, dtype=torch.float32)
       rgb = data['rgb'].to(self.device, dtype=torch.float32)
@@ -908,6 +944,9 @@ class Engine(object):
           bb_velocity = torch.zeros_like(bb_velocity)
           bb_brake_target = torch.zeros_like(bb_brake_target)
 
+      # Load rgb_real labels from data: 1 for real (NavSim) data, 0 for sim (CARLA) data
+      rgb_real = data['rgb_real'].to(self.device, dtype=torch.float32)
+
       pred_wp,\
       pred_target_speed,\
       pred_checkpoint,\
@@ -917,11 +956,13 @@ class Engine(object):
       pred_bounding_box, _, \
       pred_wp_1, \
       selected_path, \
-      pred_domain = self.model(rgb=rgb,
+      disc_loss, anti_disc_loss, \
+      pred_loss, pred_domain = self.model(rgb=rgb,
                           lidar_bev=lidar,
                           target_point=target_point,
                           ego_vel=ego_vel,
                           command=command,
+                          rgb_real=rgb_real,
                           target_point_next=target_point_next if self.config.two_tp_input else None,)
     else:
       raise ValueError('The chosen vision backbone does not exist. The options are: transFuser, aim, bev_encoder')
@@ -1017,7 +1058,7 @@ class Engine(object):
                         gt_bev_semantic=bev_semantic_label,
                         gt_speed=ego_vel)
 
-    return losses, metrics
+    return losses, metrics, disc_loss, anti_disc_loss, pred_loss
 
   def train(self):
     self.model.train()
@@ -1031,7 +1072,7 @@ class Engine(object):
     for i, data in enumerate(tqdm(self.dataloader_train, disable=self.rank != 0)):
 
       with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=bool(self.config.use_amp)):
-        losses, _ = self.load_data_compute_loss(data, validation=False)
+        losses, _, disc_loss, anti_disc_loss, pred_loss = self.load_data_compute_loss(data, validation=False)
         loss = torch.zeros(1, dtype=torch.float32, device=self.device)
 
         for key, value in losses.items():
@@ -1043,7 +1084,16 @@ class Engine(object):
             loss += self.detailed_loss_weights[key] * value
             detailed_losses_epoch[key] += float(self.detailed_loss_weights[key] * float(value.item()))
 
-      self.scaler.scale(loss).backward()
+      # Combine all losses that share the computational graph
+      # Skip disc_loss (only using anti_disc_loss for adversarial training)
+      combined_loss = loss
+      if anti_disc_loss is not None:
+        combined_loss = combined_loss + anti_disc_loss
+      if pred_loss is not None:
+        combined_loss = combined_loss + pred_loss
+
+      # Single backward for all losses that share the graph
+      self.scaler.scale(combined_loss).backward()
 
       if self.config.use_grad_clip:
         # Unscales the gradients of optimizers assigned params in-place

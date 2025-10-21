@@ -54,8 +54,8 @@ def create_video_from_frames(input_folder, output_path, fps=10):
 
 def main():
     """Main function to process all folders"""
-    input_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/adapt_extr_test_output"
-    output_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/adapt_extr_longest6_videos"
+    input_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/discr_pred_test_output"
+    output_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/discr_pred_test_videos"
 
     # Create output directory
     Path(output_dir).mkdir(parents=True, exist_ok=True)

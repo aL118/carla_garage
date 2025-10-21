@@ -49,7 +49,7 @@ class GlobalConfig:
     # Minimum walker speed
     self.min_walker_speed = 0.5
     # Time in seconds to draw the things during debugging.
-    self.draw_life_time = 0.051
+    self.draw_life_time = 10000.0  # Changed from 0.051 to make waypoints persist
     # Points sampled per meter when interpolating route.
     self.points_per_meter = 10
     # FPS of the simulation

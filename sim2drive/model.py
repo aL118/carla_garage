@@ -313,7 +313,7 @@ class Sim2DriveModel(nn.Module):
     if self.config.tp_attention:
       nn.init.uniform_(self.tp_pos_embed)
 
-  def forward(self, rgb, lidar_bev, target_point, ego_vel, command, target_point_next=None):
+  def forward(self, rgb, lidar_bev, target_point, ego_vel, command, rgb_real, domain_label=None, target_point_next=None):
     # Process RGB through adapter and DINOv2 extractor
     adapted_virtual = self.adapter(rgb)
 
@@ -322,7 +322,7 @@ class Sim2DriveModel(nn.Module):
     with torch.no_grad():  # DINOv2 is frozen
       dinov2_output = self.extractor.forward_features(adapted_virtual)
 
-    # Extract CLS token - DINOv2 returns a dictionary
+    # Extract CLS token first - DINOv2 returns a dictionary
     if isinstance(dinov2_output, dict):
       if 'x_norm_clstoken' in dinov2_output:
         cls_token = dinov2_output['x_norm_clstoken']  # Shape: (B, 768)
@@ -347,7 +347,25 @@ class Sim2DriveModel(nn.Module):
       print(f"DEBUG: dinov2_output type: {type(dinov2_output)}")
       raise RuntimeError(f"Unexpected cls_token shape: {cls_token.shape}, expected (B, 768)")
 
+    # Discriminator gets detached features to avoid backprop through extractor
+    # disc_output: (B, 1), rgb_real: (B,) with 0=sim, 1=real
+    disc_output = self.discriminator(cls_token.detach())
+    # Note: discriminator already has sigmoid, so use BCE instead of BCEWithLogits
+    disc_loss = F.binary_cross_entropy(disc_output.squeeze(1), rgb_real.float())
+
+    # Anti-discriminator loss: adapter tries to fool discriminator
+    # We want the adapter to make sim images look real (push towards label=1)
+    anti_disc_output = self.discriminator(cls_token)  # No detach - gradients flow to adapter
+    # Flip the labels: try to make discriminator predict opposite of truth
+    anti_disc_loss = F.binary_cross_entropy(anti_disc_output.squeeze(1), 1.0 - rgb_real.float())
+
+    # Prediction head output (auxiliary task classifier)
     pred_domain = self.prediction_head(cls_token)  # Shape: (B, num_classes)
+
+    # Calculate prediction loss if domain_label is provided
+    pred_loss = None
+    if domain_label is not None:
+      pred_loss = F.cross_entropy(pred_domain, domain_label.long())
 
     bs = rgb.shape[0]
     if self.config.two_tp_input:
@@ -474,9 +492,9 @@ class Sim2DriveModel(nn.Module):
     pred_bounding_box = None
     if self.config.detect_boxes:
       pred_bounding_box = self.head(bev_feature_grid)
-
+              
     return pred_wp, pred_target_speed, pred_checkpoint, pred_semantic, pred_bev_semantic, pred_depth, \
-      pred_bounding_box, attention_weights, pred_wp_1, selected_path, pred_domain
+      pred_bounding_box, attention_weights, pred_wp_1, selected_path, disc_loss, anti_disc_loss, pred_loss, pred_domain
 
   def compute_loss(self, pred_wp, pred_target_speed, pred_checkpoint, pred_semantic, pred_bev_semantic, pred_depth,
                    pred_bounding_box, pred_wp_1, selected_path, pred_domain, waypoint_label, target_speed_label, checkpoint_label,
@@ -529,10 +547,11 @@ class Sim2DriveModel(nn.Module):
 
       loss.update(loss_bbox)
 
-    # Domain adaptation loss - only compute if domain_label is provided
+    # Prediction head loss - auxiliary classification task
+    # pred_domain: (B, num_classes), domain_label: (B,)
     if domain_label is not None and pred_domain is not None:
-      loss_domain = F.cross_entropy(pred_domain, domain_label)
-      loss.update({'loss_domain': loss_domain})
+      loss_pred = F.cross_entropy(pred_domain, domain_label.long())
+      loss.update({'loss_prediction': loss_pred})
 
     return loss
 
