@@ -678,38 +678,36 @@ def main():
   subset_indices = range(0, len(train_set), n)
   train_set_subset = Subset(train_set, subset_indices)
 
-  sampler_train = torch.utils.data.distributed.DistributedSampler(train_set_subset,
+  sampler_train = torch.utils.data.distributed.DistributedSampler(train_set,
                                                                   shuffle=True,
                                                                   num_replicas=world_size,
                                                                   rank=rank,
                                                                   drop_last=True)
-  dataloader_train = DataLoader(train_set_subset,  # Fixed: use subset instead of full train_set
+  dataloader_train = DataLoader(train_set,
                                 sampler=sampler_train,
                                 batch_size=args.batch_size,
                                 worker_init_fn=seed_worker,
                                 generator=g_cuda,
                                 num_workers=num_workers,
-                                pin_memory=False,  # Keep False to save memory - tight on GPU
-                                drop_last=True,
-                                persistent_workers=True)
+                                pin_memory=False,
+                                drop_last=True)
 
   if args.setting != 'all':
     subset_indices = range(0, len(val_set), n)
     val_set_subset = Subset(val_set, subset_indices)
-    sampler_val = torch.utils.data.distributed.DistributedSampler(val_set_subset,
+    sampler_val = torch.utils.data.distributed.DistributedSampler(val_set,
                                                                   shuffle=False,
                                                                   num_replicas=world_size,
                                                                   rank=rank,
                                                                   drop_last=True)
-    dataloader_val = DataLoader(val_set_subset,  # Fixed: use subset instead of full val_set
+    dataloader_val = DataLoader(val_set,
                                 sampler=sampler_val,
                                 batch_size=args.batch_size,
                                 worker_init_fn=seed_worker,
                                 generator=g_cuda,
                                 num_workers=num_workers,
-                                pin_memory=False,  # Keep False to save memory - tight on GPU
-                                drop_last=True,
-                                persistent_workers=True)
+                                pin_memory=False,
+                                drop_last=True)
   else:
     sampler_val, dataloader_val = None, None
 
@@ -899,8 +897,6 @@ class Engine(object):
                                     stop_hazard=stop_hazard,
                                     junction=junction,
                                     velocity=ego_vel)
-
-      # Plant model doesn't have discriminator or prediction head losses
       disc_loss = None
       anti_disc_loss = None
       pred_loss = None
