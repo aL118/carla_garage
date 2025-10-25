@@ -12,6 +12,7 @@ import sys
 import os
 import pathlib
 import datetime
+import time
 import random
 import jsonpickle
 import jsonpickle.ext.numpy as jsonpickle_numpy
@@ -58,6 +59,7 @@ except (ModuleNotFoundError, ImportError) as e:
 
 @record  # Records error and tracebacks in case of failure
 def main():
+  start = time.time()
   torch.cuda.empty_cache()
 
   # Loads the default values for the argparse so we have only one default
@@ -678,36 +680,41 @@ def main():
   subset_indices = range(0, len(train_set), n)
   train_set_subset = Subset(train_set, subset_indices)
 
-  sampler_train = torch.utils.data.distributed.DistributedSampler(train_set,
+  sampler_train = torch.utils.data.distributed.DistributedSampler(train_set_subset,
                                                                   shuffle=True,
                                                                   num_replicas=world_size,
                                                                   rank=rank,
                                                                   drop_last=True)
-  dataloader_train = DataLoader(train_set,
+  dataloader_train = DataLoader(train_set_subset,
                                 sampler=sampler_train,
                                 batch_size=args.batch_size,
                                 worker_init_fn=seed_worker,
                                 generator=g_cuda,
                                 num_workers=num_workers,
                                 pin_memory=False,
-                                drop_last=True)
+                                drop_last=True,
+                                persistent_workers=True)
 
   if args.setting != 'all':
+    # Don't apply slicing to validation set to ensure we have enough data
     subset_indices = range(0, len(val_set), n)
     val_set_subset = Subset(val_set, subset_indices)
-    sampler_val = torch.utils.data.distributed.DistributedSampler(val_set,
+    sampler_val = torch.utils.data.distributed.DistributedSampler(val_set_subset,
                                                                   shuffle=False,
                                                                   num_replicas=world_size,
                                                                   rank=rank,
                                                                   drop_last=True)
-    dataloader_val = DataLoader(val_set,
+    dataloader_val = DataLoader(val_set_subset,
                                 sampler=sampler_val,
                                 batch_size=args.batch_size,
                                 worker_init_fn=seed_worker,
                                 generator=g_cuda,
                                 num_workers=num_workers,
                                 pin_memory=False,
-                                drop_last=True)
+                                drop_last=True,
+                                persistent_workers=True)
+    if rank == 0:
+      print(f'Validation set: {len(val_set)} samples, after slicing: {len(val_set_subset)}, per GPU: {len(val_set_subset)//world_size}, batches per GPU: {len(dataloader_val)}')
   else:
     sampler_val, dataloader_val = None, None
 
@@ -755,19 +762,30 @@ def main():
                    cur_epoch=start_epoch,
                    scheduler=scheduler,
                    scaler=scaler)
+  end = time.time()
+  if rank == 0:
+    print(f'$Initialization time: {end - start} seconds')
 
   for epoch in range(trainer.cur_epoch, args.epochs):
+    epoch_start_time = time.time()
     print(f'Epoch {epoch}, learning rate: ', scheduler.get_last_lr())
     # Update the seed depending on the epoch so that the distributed
     # sampler will use different shuffles across different epochs
     sampler_train.set_epoch(epoch)
 
+    dataloader_start_time = time.time()
+    if rank == 0:
+      print(f'Time before dataloader iteration (epoch setup): {dataloader_start_time - epoch_start_time:.2f}s')
     trainer.train()
     torch.cuda.empty_cache()
 
     if ((args.setting != 'all') and (epoch % args.val_every == 0)):
+      if rank == 0:
+        print(f'Running validation at epoch {epoch}...')
       trainer.validate()
       torch.cuda.empty_cache()
+      if rank == 0:
+        print(f'Validation completed at epoch {epoch}.')
 
     if not config.use_cosine_schedule:
       scheduler.step()
@@ -1065,8 +1083,8 @@ class Engine(object):
     self.optimizer.zero_grad(set_to_none=False)
 
     # Train loop
+    dataloader_start_time = time.time()
     for i, data in enumerate(tqdm(self.dataloader_train, disable=self.rank != 0)):
-
       with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=bool(self.config.use_amp)):
         losses, _, disc_loss, anti_disc_loss, pred_loss = self.load_data_compute_loss(data, validation=False)
         loss = torch.zeros(1, dtype=torch.float32, device=self.device)
@@ -1108,6 +1126,10 @@ class Engine(object):
 
       if self.config.use_cosine_schedule:
         self.scheduler.step(self.cur_epoch + i / self.iters_per_epoch)
+      
+    if self.rank == 0:
+      first_batch_time = time.time()
+      print(f'$Time to complete one loop: {first_batch_time - dataloader_start_time:.2f}s')
 
     self.optimizer.zero_grad(set_to_none=True)
     torch.cuda.empty_cache()
@@ -1120,11 +1142,11 @@ class Engine(object):
 
     num_batches = 0
     loss_epoch = 0.0
-    detailed_val_losses_epoch = defaultdict(float)
+    detailed_val_losses_epoch = {key: 0.0 for key in self.detailed_loss_weights}
 
     # Evaluation loop loop
     for data in tqdm(self.dataloader_val, disable=self.rank != 0):
-      losses, metrics = self.load_data_compute_loss(data, validation=True)
+      losses, metrics, _, _, _ = self.load_data_compute_loss(data, validation=True)
 
       loss = torch.zeros(1, dtype=torch.float32, device=self.device)
 
@@ -1138,7 +1160,10 @@ class Engine(object):
           loss += self.detailed_loss_weights[key] * value
           detailed_val_losses_epoch[key] += float(self.detailed_loss_weights[key] * float(value.item()))
 
+      # Add metrics (these are not in detailed_loss_weights, so add them separately)
       for key, value in metrics.items():
+        if key not in detailed_val_losses_epoch:
+          detailed_val_losses_epoch[key] = 0.0
         detailed_val_losses_epoch[key] += float(value)
 
       num_batches += 1
@@ -1228,5 +1253,7 @@ if __name__ == '__main__':
   elif 'forkserver' in available_start_methods:
     mp.set_start_method('forkserver')
   print('Start method of multiprocessing:', mp.get_start_method())
-
+  start = time.time()
   main()
+  end = time.time()
+  print(f'$Training time: {end - start} seconds')
