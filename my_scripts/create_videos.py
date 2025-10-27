@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 
-def create_video_from_frames(input_folder, output_path, fps=10):
+def create_video_from_frames(input_folder, output_path, fps=10, max_frames=4000):
     """
     Create MP4 video from PNG frames in a folder
 
@@ -41,12 +41,14 @@ def create_video_from_frames(input_folder, output_path, fps=10):
     # Write frames to video with progress bar
     folder_name = os.path.basename(os.path.dirname(output_path))
     with tqdm(png_files, desc=f"Processing {folder_name}", unit="frame") as pbar:
-        for png_file in pbar:
+        for i, png_file in enumerate(pbar):
             frame = cv2.imread(png_file)
             if frame is None:
                 continue
 
             video_writer.write(frame)
+            if i > max_frames:
+                break
 
     # Release video writer
     video_writer.release()
@@ -54,8 +56,8 @@ def create_video_from_frames(input_folder, output_path, fps=10):
 
 def main():
     """Main function to process all folders"""
-    input_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/adapt_extr_stage2_epoch23_output"
-    output_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/adapt_extr_stage2_epoch23_videos"
+    input_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/quicktest_large_output"
+    output_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/quicktest_large_videos"
 
     # Create output directory
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -71,8 +73,9 @@ def main():
         folder_path = os.path.join(input_dir, folder_name)
         output_path = os.path.join(output_dir, f"{folder_name}.mp4")
 
-        if create_video_from_frames(folder_path, output_path):
+        if create_video_from_frames(folder_path, output_path, max_frames=4000):
             success_count += 1
+        break
 
     print(f"\nSuccessfully created {success_count}/{len(folders)} videos in {output_dir}")
 

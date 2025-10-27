@@ -595,12 +595,58 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
         pred_target_speed_index = torch.argmax(pred_target_speed_ensemble)
         pred_target_speed_scalar = self.inference_target_speeds[pred_target_speed_index]
 
+    # # Average and correct checkpoints BEFORE visualization
+    # pred_checkpoints_corrected = None
+    # if self.config.use_controller_input_prediction:
+    #   pred_checkpoints_avg = torch.stack(pred_checkpoints, dim=0).mean(dim=0)
+    #   pred_checkpoints_np = pred_checkpoints_avg.detach().cpu().numpy()
+
+    #   # Check if predicted checkpoints are too far from each other
+    #   max_checkpoint_distance = 4  # Maximum allowed distance between consecutive checkpoints (in meters)
+    #   max_first_checkpoint_dist = 4  # Maximum distance for first checkpoint from origin
+
+    #   needs_correction = False
+    #   correction_reason = ""
+
+    #   # Check if first checkpoint is too far from current position (origin in vehicle coordinates)
+    #   if len(pred_checkpoints_np) > 0:
+    #     first_cp_dist = np.linalg.norm(pred_checkpoints_np[0])
+    #     if first_cp_dist > max_first_checkpoint_dist:
+    #       needs_correction = True
+    #       correction_reason = f'First checkpoint too far from vehicle (dist={first_cp_dist:.2f}m > {max_first_checkpoint_dist}m)'
+
+    #   # Check distances between consecutive checkpoints
+    #   if not needs_correction:
+    #     for i in range(len(pred_checkpoints_np) - 1):
+    #       dist = np.linalg.norm(pred_checkpoints_np[i+1] - pred_checkpoints_np[i])
+    #       if dist > max_checkpoint_distance:
+    #         needs_correction = True
+    #         correction_reason = f'Consecutive checkpoints too far apart at idx {i}->{i+1} (dist={dist:.2f}m > {max_checkpoint_distance}m)'
+    #         break
+
+    #   # If checkpoints are problematic, replace with straight line trajectory
+    #   if needs_correction:
+    #     print(f'[Step {self.step}] *** CHECKPOINT CORRECTION: {correction_reason}. Using straight trajectory. ***')
+
+    #     # Create checkpoints along vehicle's current heading (positive x-axis in vehicle coordinates)
+    #     target_spacing = 0.5
+    #     straight_checkpoints = np.zeros_like(pred_checkpoints_np)
+    #     for i in range(len(pred_checkpoints_np)):
+    #       straight_checkpoints[i] = np.array([target_spacing * (i + 1), 0.0])
+
+    #     pred_checkpoints_corrected = torch.from_numpy(straight_checkpoints[np.newaxis, :, :]).float().to(pred_checkpoints_avg.device)
+    #   else:
+    #     pred_checkpoints_corrected = pred_checkpoints_avg[np.newaxis, :, :]
+
     # Visualize the output of the last model
     if compute_debug_output:
       if self.config.use_controller_input_prediction:
         prob_target_speed = F.softmax(pred_target_speed, dim=1)
       else:
         prob_target_speed = pred_target_speed
+
+      # Use corrected checkpoints for visualization if available
+      # checkpoint_to_visualize = pred_checkpoints_corrected if pred_checkpoints_corrected is not None else pred_checkpoint
 
       self.nets[0].visualize_model(
           self.save_path,
@@ -613,7 +659,7 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
           pred_semantic=pred_semantic,
           pred_bev_semantic=pred_bev_semantic,
           pred_depth=pred_depth,
-          pred_checkpoint=pred_checkpoint,
+          pred_checkpoint=pred_checkpoint, # checkpoint_to_visualize,
           pred_speed=prob_target_speed,
           pred_target_speed_scalar=pred_target_speed_scalar,
           pred_bb=bbs_vehicle_coordinate_system,
@@ -622,8 +668,9 @@ class SensorAgent(autonomous_agent.AutonomousAgent):
           wp_selected=wp_selected)
 
     if self.config.inference_direct_controller and self.config.use_controller_input_prediction:
-      pred_checkpoints = torch.stack(pred_checkpoints, dim=0).mean(dim=0).detach().cpu().numpy()
-      steer, throttle, brake = self.nets[0].control_pid_direct(pred_checkpoints, pred_target_speed_scalar, gt_velocity)
+      # Use the already-corrected checkpoints from above
+      pred_checkpoints_for_control = pred_checkpoints_corrected[0].detach().cpu().numpy()
+      steer, throttle, brake = self.nets[0].control_pid_direct(pred_checkpoints_for_control, pred_target_speed_scalar, gt_velocity)
     elif self.config.use_wp_gru and not self.config.inference_direct_controller:
       steer, throttle, brake = self.nets[0].control_pid(self.pred_wp,
                                                         gt_velocity,

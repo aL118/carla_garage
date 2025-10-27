@@ -145,6 +145,7 @@ class RoutePlanner(object):
     self.route = deque()
     self.saved_route_distances = deque()
     self.route_distances = deque()
+    self.waypoint_pop_delays = deque()  # Track frames before popping each waypoint
 
     self.lat_ref = lat_ref
     self.lon_ref = lon_ref
@@ -152,6 +153,7 @@ class RoutePlanner(object):
     self.min_distance = min_distance
     self.max_distance = max_distance
     self.is_last = False
+    self.pop_delay_frames = 15  # Delay popping by 10 frames
 
   def convert_gps_to_carla(self, gps):
     """
@@ -173,6 +175,7 @@ class RoutePlanner(object):
 
   def set_route(self, global_plan, gps=False, carla_map=None):
     self.route.clear()
+    self.waypoint_pop_delays.clear()
 
     for pos, cmd in global_plan:
       if gps:
@@ -183,6 +186,7 @@ class RoutePlanner(object):
         pos = np.array([pos.location.x, pos.location.y, pos.location.z])
 
       self.route.append((pos, cmd))
+      self.waypoint_pop_delays.append(0)  # Initialize delay counter to 0
 
     if carla_map is not None:
       for _ in range(50):
@@ -190,6 +194,7 @@ class RoutePlanner(object):
         next_loc = carla_map.get_waypoint(loc).next(1)[0].transform.location
         next_loc = np.array([next_loc.x, next_loc.y, next_loc.z])
         self.route.append((next_loc, self.route[-1][1]))
+        self.waypoint_pop_delays.append(0)  # Initialize delay counter for extended waypoints
 
     # We do the calculations in the beginning once so that we don't have
     # to do them every time in run_step
@@ -220,10 +225,30 @@ class RoutePlanner(object):
         farthest_in_range = distance
         to_pop = i
 
-    for _ in range(to_pop):
+    # Increment delay counter only for the waypoint that's in range
+    # Pop all waypoints up to that point once delay threshold is reached
+    actual_pop_count = 0
+    if to_pop > 0 and to_pop < len(self.waypoint_pop_delays):
+      # Increment delay for the waypoint at to_pop index (the one in range)
+      self.waypoint_pop_delays[to_pop] += 1
+
+      # Check if this waypoint has been close long enough
+      if self.waypoint_pop_delays[to_pop] >= self.pop_delay_frames:
+        # Pop all waypoints up to and including this one
+        actual_pop_count = to_pop
+        if to_pop > 0:
+          print(f"[NavPlanner] Popping {to_pop} waypoints after {self.waypoint_pop_delays[to_pop]} frames delay")
+
+    # Reset delay counter for waypoints beyond to_pop
+    for i in range(to_pop + 1, len(self.waypoint_pop_delays)):
+      self.waypoint_pop_delays[i] = 0
+
+    # Pop waypoints that have exceeded the delay threshold
+    for _ in range(actual_pop_count):
       if len(self.route) > 2:
         self.route.popleft()
         self.route_distances.popleft()
+        self.waypoint_pop_delays.popleft()
 
     return self.route
 
@@ -235,13 +260,16 @@ class RoutePlanner(object):
 
     self.saved_route = deque(self.saved_route)
     self.saved_route_distances = deepcopy(self.route_distances)
+    self.saved_waypoint_pop_delays = deepcopy(self.waypoint_pop_delays)
 
   def load(self):
     self.route = self.saved_route
     self.route_distances = self.saved_route_distances
+    self.waypoint_pop_delays = self.saved_waypoint_pop_delays
     self.is_last = False
     self.route = self.saved_route
     self.route_distances = self.saved_route_distances
+    self.waypoint_pop_delays = self.saved_waypoint_pop_delays
     self.is_last = False
 
 

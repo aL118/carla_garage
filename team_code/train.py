@@ -558,7 +558,7 @@ def main():
 
   # If NavSim path is provided, create NavSim (real) dataset with rgb_real=True
   if args.navsim_path is not None:
-    navsim_roots = [os.path.join(args.navsim_path, name) for name in os.listdir(args.navsim_path)]
+    navsim_roots = [args.navsim_path]
     navsim_train_set = CARLA_Data(root=navsim_roots,
                                   config=config,
                                   estimate_class_distributions=False,

@@ -862,7 +862,7 @@ class GlobalConfig:
     # Sim2Drive Adapter + Extractor
     # -----------------------------------------------------------------------------
     self.adapter_type = None
-    self.adapter_hidden_dim = None
+    self.adapter_hidden_dim = 128
     self.adapter_dropout = None
     self.dinov2_model = None
     self.dinov2_pretrained = True
