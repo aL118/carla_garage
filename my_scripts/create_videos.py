@@ -56,8 +56,8 @@ def create_video_from_frames(input_folder, output_path, fps=10, max_frames=4000)
 
 def main():
     """Main function to process all folders"""
-    input_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/quicktest_large_output"
-    output_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/quicktest_large_videos"
+    input_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/ablation_pred_output"
+    output_dir = "/fs/nexus-scratch/aliu1237/carla_garage/my_dump/ablation_pred_videos"
 
     # Create output directory
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -75,7 +75,6 @@ def main():
 
         if create_video_from_frames(folder_path, output_path, max_frames=4000):
             success_count += 1
-        break
 
     print(f"\nSuccessfully created {success_count}/{len(folders)} videos in {output_dir}")
 

@@ -5,14 +5,18 @@ CUDA_VISIBLE_DEVICES=0,1 OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1
 torchrun --nnodes=1 --nproc_per_node=2 --max_restarts=0 --rdzv_id=1234576890 --rdzv_backend=c10d
 train.py --logdir /path/to/logdir --root_dir /path/to/dataset_root/ --id exp_000 --cpu_cores 8
 '''
-
+import sys
 import argparse
 import json
-import sys
 import os
+
+# Add team_code and sim2drive directories to Python path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(parent_dir, 'team_code'))
+sys.path.insert(0, os.path.join(parent_dir, 'sim2drive'))
+
 import pathlib
 import datetime
-import time
 import random
 import jsonpickle
 import jsonpickle.ext.numpy as jsonpickle_numpy
@@ -23,7 +27,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import optim
-from torch.utils.data import DataLoader, ConcatDataset, Subset
+from torch.utils.data import DataLoader, Subset
 from torch.utils.tensorboard import SummaryWriter
 from torch.distributed.elastic.multiprocessing.errors import record
 from torch.distributed.optim import ZeroRedundancyOptimizer
@@ -35,15 +39,6 @@ from config import GlobalConfig
 from model import LidarCenterNet
 from data import CARLA_Data
 from plant import PlanT
-
-try:
-  parent_dir = os.path.dirname(os.path.dirname(__file__))
-  sys.path.insert(0, parent_dir)
-  from sim2drive.model_sim2drive import Sim2DriveModel
-  DINOV2_AVAILABLE = True
-except ImportError as e:
-  DINOV2_AVAILABLE = False
-  print(f"Warning: sim2drive module not found. DINOv2 backbone will not be available. Error: {e}")
 
 jsonpickle_numpy.register_handlers()
 jsonpickle.set_encoder_options('json', sort_keys=True, indent=4)
@@ -59,7 +54,6 @@ except (ModuleNotFoundError, ImportError) as e:
 
 @record  # Records error and tracebacks in case of failure
 def main():
-  start = time.time()
   torch.cuda.empty_cache()
 
   # Loads the default values for the argparse so we have only one default
@@ -89,8 +83,7 @@ def main():
                       '13_withheld: Do not train on Town 13. '
                       '12_only: Only trains with data from Town 12 '
                       'Withheld data is used for validation')
-  parser.add_argument('--root_dir', type=str, required=True, nargs='+', help='Root directory of your CARLA training data')
-  parser.add_argument('--navsim_path', type=str, default=None, help='Path to NavSim real data (e.g., /path/to/navsim_STRAIGHT). If specified, will be used as real data.')
+  parser.add_argument('--root_dir', type=str, required=True, nargs='+', help='Root directory of your training data')
   parser.add_argument('--slicing_factor', type=int, default=1, help='Factor by which to slice the dataset. 1 means full dataset, 10 means every 10th sample.')
   parser.add_argument('--schedule_reduce_epoch_01',
                       type=int,
@@ -106,11 +99,12 @@ def main():
                       type=str,
                       default=config.backbone,
                       help='Which fusion backbone to use. Options: transFuser, aim, bev_encoder, transFuser_dinov2')
-  parser.add_argument('--image_architecture',
-                      type=str,
-                      default=config.image_architecture,
-                      help='Which architecture to use for the image branch. resnet34, regnety_032, hf-hub:apple/mobileclip_s0_timm etc.'
-                      'All options of the TIMM lib can be used but some might need adjustments to the backbone.')
+  parser.add_argument(
+      '--image_architecture',
+      type=str,
+      default=config.image_architecture,
+      help='Which architecture to use for the image branch. resnet34, regnety_032, hf-hub:apple/mobileclip_s0_timm etc.'
+      'All options of the TIMM lib can be used but some might need adjustments to the backbone.')
   parser.add_argument('--lidar_architecture',
                       type=str,
                       default=config.lidar_architecture,
@@ -390,24 +384,6 @@ def main():
                       help='Dropout rate for non-RGB data (lidar, bev, auxiliary). 0 means no dropout, '
                       '0.01 means dropout every 100 iterations.')
 
-  # DINOv2 + Adapter arguments
-  parser.add_argument('--adapter_type',
-                      type=str,
-                      default='conv',
-                      help='Adapter type: mlp or conv (only used with transFuser_dinov2 backbone)')
-  parser.add_argument('--adapter_hidden_dim',
-                      type=int,
-                      default=64,
-                      help='Hidden dimension for adapter (only used with transFuser_dinov2 backbone)')
-  parser.add_argument('--adapter_dropout',
-                      type=float,
-                      default=0.1,
-                      help='Dropout rate for adapter (only used with transFuser_dinov2 backbone)')
-  parser.add_argument('--dinov2_model',
-                      type=str,
-                      default='dinov2_vitb14',
-                      help='DINOv2 model variant (only used with transFuser_dinov2 backbone)')
-
   args = parser.parse_args()
   args.logdir = os.path.join(args.logdir, args.id)
 
@@ -459,15 +435,6 @@ def main():
 
   # Configure config. Converts all arguments into config attributes
   config.initialize(**vars(args))
-
-  # Add DINOv2-specific config attributes if using DINOv2 backbone
-  if config.backbone == 'transFuser_dinov2':
-    config.adapter_type = args.adapter_type
-    config.adapter_hidden_dim = args.adapter_hidden_dim
-    config.adapter_dropout = args.adapter_dropout
-    config.dinov2_model = args.dinov2_model
-    config.dinov2_pretrained = True
-    config.freeze_dinov2 = True
 
   config.debug = int(os.environ.get('DEBUG_CHALLENGE', 0))
   # Before normalizing we need to set the losses we don't use to 0
@@ -546,36 +513,16 @@ def main():
       config.detailed_loss_weights[k] = config.detailed_loss_weights[k] * factor
 
   # Data, configures config. Create before the model
-  # Create CARLA (simulated) dataset with rgb_real=False
-  carla_train_set = CARLA_Data(root=config.data_roots,
-                               config=config,
-                               estimate_class_distributions=config.estimate_class_distributions,
-                               estimate_sem_distribution=config.estimate_semantic_distribution,
-                               shared_dict=shared_dict,
-                               rank=rank,
-                               validation=False,
-                               rgb_real=False)
-
-  # If NavSim path is provided, create NavSim (real) dataset with rgb_real=True
-  if args.navsim_path is not None:
-    navsim_roots = [args.navsim_path]
-    navsim_train_set = CARLA_Data(root=navsim_roots,
-                                  config=config,
-                                  estimate_class_distributions=False,
-                                  estimate_sem_distribution=False,
-                                  shared_dict=shared_dict,
-                                  rank=rank,
-                                  validation=False,
-                                  rgb_real=True)
-    # Concatenate CARLA and NavSim datasets
-    train_set = ConcatDataset([carla_train_set, navsim_train_set])
-    if rank == 0:
-      print(f'Combined dataset: {len(carla_train_set)} CARLA samples + {len(navsim_train_set)} NavSim samples = {len(train_set)} total')
-  else:
-    train_set = carla_train_set
+  train_set = CARLA_Data(root=config.data_roots,
+                         config=config,
+                         estimate_class_distributions=config.estimate_class_distributions,
+                         estimate_sem_distribution=config.estimate_semantic_distribution,
+                         shared_dict=shared_dict,
+                         rank=rank,
+                         validation=False)
 
   if args.setting != 'all':
-    val_set = CARLA_Data(root=config.data_roots, config=config, shared_dict=shared_dict, rank=rank, validation=True, rgb_real=False)
+    val_set = CARLA_Data(root=config.data_roots, config=config, shared_dict=shared_dict, rank=rank, validation=True)
   else:
     val_set = None
 
@@ -590,16 +537,6 @@ def main():
   # Create model and optimizers
   if config.use_plant:
     model = PlanT(config)
-  elif config.backbone == 'transFuser_dinov2':
-    if not DINOV2_AVAILABLE:
-      raise RuntimeError("DINOv2 backbone requested but sim2drive module not found. "
-                        "Please check that /sim2drive/ directory exists.")
-    if rank == 0:
-      print("Using DINOv2 + Adapter backbone")
-      print(f"  Adapter type: {config.adapter_type}")
-      print(f"  Adapter hidden dim: {config.adapter_hidden_dim}")
-      print(f"  DINOv2 model: {config.dinov2_model}")
-    model = Sim2DriveModel(config, device)
   else:
     model = LidarCenterNet(config)
 
@@ -641,8 +578,6 @@ def main():
   find_unused_parameters = False
   if config.use_plant:
     find_unused_parameters = True
-  if config.backbone == 'transFuser_dinov2':
-    find_unused_parameters = True  # DINOv2 model has unused parameters (adapter, discriminator, etc.)
   model = torch.nn.parallel.DistributedDataParallel(model,
                                                     device_ids=None,
                                                     output_device=None,
@@ -692,15 +627,13 @@ def main():
                                 generator=g_cuda,
                                 num_workers=num_workers,
                                 pin_memory=False,
-                                drop_last=True,
-                                persistent_workers=True)
+                                drop_last=True)
 
   if args.setting != 'all':
-    # Don't apply slicing to validation set to ensure we have enough data
     subset_indices = range(0, len(val_set), n)
     val_set_subset = Subset(val_set, subset_indices)
     sampler_val = torch.utils.data.distributed.DistributedSampler(val_set_subset,
-                                                                  shuffle=False,
+                                                                  shuffle=True,
                                                                   num_replicas=world_size,
                                                                   rank=rank,
                                                                   drop_last=True)
@@ -711,10 +644,7 @@ def main():
                                 generator=g_cuda,
                                 num_workers=num_workers,
                                 pin_memory=False,
-                                drop_last=True,
-                                persistent_workers=True)
-    if rank == 0:
-      print(f'Validation set: {len(val_set)} samples, after slicing: {len(val_set_subset)}, per GPU: {len(val_set_subset)//world_size}, batches per GPU: {len(dataloader_val)}')
+                                drop_last=True)
   else:
     sampler_val, dataloader_val = None, None
 
@@ -762,30 +692,19 @@ def main():
                    cur_epoch=start_epoch,
                    scheduler=scheduler,
                    scaler=scaler)
-  end = time.time()
-  if rank == 0:
-    print(f'$Initialization time: {end - start} seconds')
 
   for epoch in range(trainer.cur_epoch, args.epochs):
-    epoch_start_time = time.time()
     print(f'Epoch {epoch}, learning rate: ', scheduler.get_last_lr())
     # Update the seed depending on the epoch so that the distributed
     # sampler will use different shuffles across different epochs
     sampler_train.set_epoch(epoch)
 
-    dataloader_start_time = time.time()
-    if rank == 0:
-      print(f'Time before dataloader iteration (epoch setup): {dataloader_start_time - epoch_start_time:.2f}s')
     trainer.train()
     torch.cuda.empty_cache()
 
     if ((args.setting != 'all') and (epoch % args.val_every == 0)):
-      if rank == 0:
-        print(f'Running validation at epoch {epoch}...')
       trainer.validate()
       torch.cuda.empty_cache()
-      if rank == 0:
-        print(f'Validation completed at epoch {epoch}.')
 
     if not config.use_cosine_schedule:
       scheduler.step()
@@ -915,10 +834,7 @@ class Engine(object):
                                     stop_hazard=stop_hazard,
                                     junction=junction,
                                     velocity=ego_vel)
-      disc_loss = None
-      anti_disc_loss = None
-      pred_loss = None
-    elif self.args.backbone in ('transFuser', 'aim', 'bev_encoder', 'transFuser_dinov2'):
+    elif self.args.backbone in ('transFuser', 'aim', 'bev_encoder',  'transFuser_dinov2'):
       checkpoint = data['route'][:, :self.config.predict_checkpoint_len].to(self.device, dtype=torch.float32)
       rgb = data['rgb'].to(self.device, dtype=torch.float32)
 
@@ -958,9 +874,6 @@ class Engine(object):
           bb_velocity = torch.zeros_like(bb_velocity)
           bb_brake_target = torch.zeros_like(bb_brake_target)
 
-      # Load rgb_real labels from data: 1 for real (NavSim) data, 0 for sim (CARLA) data
-      rgb_real = data['rgb_real'].to(self.device, dtype=torch.float32)
-
       pred_wp,\
       pred_target_speed,\
       pred_checkpoint,\
@@ -969,17 +882,14 @@ class Engine(object):
       pred_depth, \
       pred_bounding_box, _, \
       pred_wp_1, \
-      selected_path, \
-      disc_loss, anti_disc_loss, \
-      pred_loss, pred_domain = self.model(rgb=rgb,
+      selected_path = self.model(rgb=rgb,
                           lidar_bev=lidar,
                           target_point=target_point,
                           ego_vel=ego_vel,
                           command=command,
-                          rgb_real=rgb_real,
                           target_point_next=target_point_next if self.config.two_tp_input else None,)
     else:
-      raise ValueError('The chosen vision backbone does not exist. The options are: transFuser, aim, bev_encoder')
+      raise ValueError('The chosen vision backbone does not exist. The options are: transFuser, aim, bev_encoder, transFuser_dinov2')
 
     compute_loss = self.model.module.compute_loss
     visualize_model = self.model.module.visualize_model
@@ -1001,9 +911,6 @@ class Engine(object):
                             pred_bev_semantic=pred_bev_semantic,
                             pred_depth=pred_depth,
                             pred_bounding_box=pred_bounding_box,
-                            pred_wp_1=pred_wp_1,
-                            selected_path=selected_path,
-                            pred_domain=pred_domain,
                             waypoint_label=ego_waypoint,
                             target_speed_label=target_speed,
                             checkpoint_label=checkpoint,
@@ -1018,7 +925,9 @@ class Engine(object):
                             velocity_label=bb_velocity,
                             brake_target_label=bb_brake_target,
                             pixel_weight_label=bb_pixel_weight,
-                            avg_factor_label=bb_avg_factor)
+                            avg_factor_label=bb_avg_factor,
+                            pred_wp_1=pred_wp_1,
+                            selected_path=selected_path)
 
     # Compute metrics for logging
     metrics = {}
@@ -1072,7 +981,7 @@ class Engine(object):
                         gt_bev_semantic=bev_semantic_label,
                         gt_speed=ego_vel)
 
-    return losses, metrics, disc_loss, anti_disc_loss, pred_loss
+    return losses, metrics
 
   def train(self):
     self.model.train()
@@ -1083,10 +992,10 @@ class Engine(object):
     self.optimizer.zero_grad(set_to_none=False)
 
     # Train loop
-    dataloader_start_time = time.time()
     for i, data in enumerate(tqdm(self.dataloader_train, disable=self.rank != 0)):
+
       with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=bool(self.config.use_amp)):
-        losses, _, disc_loss, anti_disc_loss, pred_loss = self.load_data_compute_loss(data, validation=False)
+        losses, _ = self.load_data_compute_loss(data, validation=False)
         loss = torch.zeros(1, dtype=torch.float32, device=self.device)
 
         for key, value in losses.items():
@@ -1098,12 +1007,7 @@ class Engine(object):
             loss += self.detailed_loss_weights[key] * value
             detailed_losses_epoch[key] += float(self.detailed_loss_weights[key] * float(value.item()))
 
-      # combined_loss = loss
-      # if anti_disc_loss is not None:
-      #   combined_loss = combined_loss + anti_disc_loss
-      # if pred_loss is not None:
-      #   combined_loss = combined_loss + pred_loss
-      # self.scaler.scale(combined_loss).backward()
+      self.scaler.scale(loss).backward()
 
       if self.config.use_grad_clip:
         # Unscales the gradients of optimizers assigned params in-place
@@ -1122,10 +1026,6 @@ class Engine(object):
 
       if self.config.use_cosine_schedule:
         self.scheduler.step(self.cur_epoch + i / self.iters_per_epoch)
-      
-    if self.rank == 0:
-      first_batch_time = time.time()
-      print(f'$Time to complete one loop: {first_batch_time - dataloader_start_time:.2f}s')
 
     self.optimizer.zero_grad(set_to_none=True)
     torch.cuda.empty_cache()
@@ -1138,11 +1038,11 @@ class Engine(object):
 
     num_batches = 0
     loss_epoch = 0.0
-    detailed_val_losses_epoch = {key: 0.0 for key in self.detailed_loss_weights}
+    detailed_val_losses_epoch = defaultdict(float)
 
     # Evaluation loop loop
     for data in tqdm(self.dataloader_val, disable=self.rank != 0):
-      losses, metrics, _, _, _ = self.load_data_compute_loss(data, validation=True)
+      losses, metrics = self.load_data_compute_loss(data, validation=True)
 
       loss = torch.zeros(1, dtype=torch.float32, device=self.device)
 
@@ -1156,10 +1056,7 @@ class Engine(object):
           loss += self.detailed_loss_weights[key] * value
           detailed_val_losses_epoch[key] += float(self.detailed_loss_weights[key] * float(value.item()))
 
-      # Add metrics (these are not in detailed_loss_weights, so add them separately)
       for key, value in metrics.items():
-        if key not in detailed_val_losses_epoch:
-          detailed_val_losses_epoch[key] = 0.0
         detailed_val_losses_epoch[key] += float(value)
 
       num_batches += 1
@@ -1249,7 +1146,5 @@ if __name__ == '__main__':
   elif 'forkserver' in available_start_methods:
     mp.set_start_method('forkserver')
   print('Start method of multiprocessing:', mp.get_start_method())
-  start = time.time()
+
   main()
-  end = time.time()
-  print(f'$Training time: {end - start} seconds')

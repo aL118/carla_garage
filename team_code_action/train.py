@@ -10,6 +10,12 @@ import argparse
 import json
 import sys
 import os
+
+# Add team_code and sim2drive directories to Python path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(parent_dir, 'team_code'))
+sys.path.insert(0, os.path.join(parent_dir, 'team_code_action'))
+
 import pathlib
 import datetime
 import time
@@ -899,6 +905,10 @@ class Engine(object):
     else:
       target_speed = data['target_speed'].to(self.device, dtype=torch.long)
 
+    # Load action labels (steering and throttle)
+    steer_label = data['steer'].to(self.device, dtype=torch.float32)
+    throttle_label = data['throttle'].to(self.device, dtype=torch.float32)
+
     # Load model specific data and execute model
     if self.config.use_plant:
       checkpoint = data['route'][:, :self.config.num_route_points].to(self.device, dtype=torch.float32)
@@ -958,9 +968,6 @@ class Engine(object):
           bb_velocity = torch.zeros_like(bb_velocity)
           bb_brake_target = torch.zeros_like(bb_brake_target)
 
-      # Load rgb_real labels from data: 1 for real (NavSim) data, 0 for sim (CARLA) data
-      rgb_real = data['rgb_real'].to(self.device, dtype=torch.float32)
-
       pred_wp,\
       pred_target_speed,\
       pred_checkpoint,\
@@ -970,13 +977,12 @@ class Engine(object):
       pred_bounding_box, _, \
       pred_wp_1, \
       selected_path, \
-      disc_loss, anti_disc_loss, \
-      pred_loss, pred_domain = self.model(rgb=rgb,
+      pred_steer, \
+      pred_throttle = self.model(rgb=rgb,
                           lidar_bev=lidar,
                           target_point=target_point,
                           ego_vel=ego_vel,
                           command=command,
-                          rgb_real=rgb_real,
                           target_point_next=target_point_next if self.config.two_tp_input else None,)
     else:
       raise ValueError('The chosen vision backbone does not exist. The options are: transFuser, aim, bev_encoder')
@@ -1003,7 +1009,8 @@ class Engine(object):
                             pred_bounding_box=pred_bounding_box,
                             pred_wp_1=pred_wp_1,
                             selected_path=selected_path,
-                            pred_domain=pred_domain,
+                            pred_steer=pred_steer,
+                            pred_throttle=pred_throttle,
                             waypoint_label=ego_waypoint,
                             target_speed_label=target_speed,
                             checkpoint_label=checkpoint,
@@ -1018,7 +1025,9 @@ class Engine(object):
                             velocity_label=bb_velocity,
                             brake_target_label=bb_brake_target,
                             pixel_weight_label=bb_pixel_weight,
-                            avg_factor_label=bb_avg_factor)
+                            avg_factor_label=bb_avg_factor,
+                            steer_label=steer_label,
+                            throttle_label=throttle_label)
 
     # Compute metrics for logging
     metrics = {}
@@ -1072,7 +1081,7 @@ class Engine(object):
                         gt_bev_semantic=bev_semantic_label,
                         gt_speed=ego_vel)
 
-    return losses, metrics, disc_loss, anti_disc_loss, pred_loss
+    return losses, metrics
 
   def train(self):
     self.model.train()
@@ -1086,7 +1095,7 @@ class Engine(object):
     dataloader_start_time = time.time()
     for i, data in enumerate(tqdm(self.dataloader_train, disable=self.rank != 0)):
       with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=bool(self.config.use_amp)):
-        losses, _, disc_loss, anti_disc_loss, pred_loss = self.load_data_compute_loss(data, validation=False)
+        losses, _ = self.load_data_compute_loss(data, validation=False)
         loss = torch.zeros(1, dtype=torch.float32, device=self.device)
 
         for key, value in losses.items():
@@ -1142,7 +1151,7 @@ class Engine(object):
 
     # Evaluation loop loop
     for data in tqdm(self.dataloader_val, disable=self.rank != 0):
-      losses, metrics, _, _, _ = self.load_data_compute_loss(data, validation=True)
+      losses, metrics = self.load_data_compute_loss(data, validation=True)
 
       loss = torch.zeros(1, dtype=torch.float32, device=self.device)
 

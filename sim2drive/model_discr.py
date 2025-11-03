@@ -1,13 +1,6 @@
 """
 The main model structure
 """
-import sys
-import os
-
-# Add team_code directory to Python path
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(parent_dir, 'team_code'))
-
 import transfuser_utils as t_u
 from focal_loss import FocalLoss
 import numpy as np
@@ -17,8 +10,6 @@ from bev_encoder import BevEncoder
 from aim import AIMBackbone
 from center_net import LidarCenterNetHead
 import cv2
-from .virtual_adapter import VirtualAdapter
-from .discriminator import FeatureDiscriminator
 
 import torch
 from torch import nn
@@ -29,22 +20,15 @@ import math
 import os
 from nav_planner import LateralPIDController, get_throttle
 
-class PredictionHead(nn.Module):
-    def __init__(self, input_dim=768, num_classes=6, dropout_rate=0.3):
-        super(PredictionHead, self).__init__()
-        self.dropout = nn.Dropout(dropout_rate)
-        self.classifier = nn.Linear(input_dim, num_classes)
-    
-    def forward(self, x):
-        x = self.dropout(x)  # Add dropout before classification
-        return self.classifier(x)
-    
-class Sim2DriveModel(nn.Module):
+from discriminator import FeatureDiscriminator
+
+
+class Sim2DriveModelDiscr(nn.Module):
   """
   The main model class. It can run all model configurations.
   """
 
-  def __init__(self, config, device):
+  def __init__(self, config, device='cuda'):
     super().__init__()
     self.config = config
     self.lateral_pid_controller = LateralPIDController(self.config)
@@ -52,29 +36,15 @@ class Sim2DriveModel(nn.Module):
     self.speed_histogram = []
     self.make_histogram = int(os.environ.get('HISTOGRAM', 0))
 
-    # Defining features
-    # VirtualAdapter: bottleneck with 3 RGB channels input/output, hidden_dim is the bottleneck size
-    # Output size 378 is a multiple of 14 (required for DINOv2 with patch_size=14)
-    self.adapter = VirtualAdapter(input_dim=3, hidden_dim=config.adapter_hidden_dim,
-                                   dropout_rate=0.1, output_size=378).to(device)
-    self.extractor = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14').to(device)
-    self.extractor.eval()
-    # Freeze extractor completely
-    for param in self.extractor.parameters():
-        param.requires_grad = False
-
-    self.prediction_head = PredictionHead(input_dim=768, num_classes=5).to(device)
-    self.discriminator = FeatureDiscriminator(input_dim=768).to(device)
-    
-    if self.config.backbone == 'transFuser':
+    if self.config.backbone == 'transFuser' or self.config.backbone == 'transFuser_dinov2':
       self.backbone = TransfuserBackbone(config)
     elif self.config.backbone == 'aim':
       self.backbone = AIMBackbone(config)
     elif self.config.backbone == 'bev_encoder':
       self.backbone = BevEncoder(config)
-    elif self.config.backbone == 'transFuser_dinov2':
-      # TODO: replace with custom backbone
-      self.backbone = TransfuserBackbone(config)
+    else:
+      raise ValueError('The chosen vision backbone does not exist. '
+                       'The options are: transFuser, aim, bev_encoder, transFuser_dinov2')
 
     if self.config.use_tp:
       target_point_size = 4 if self.config.two_tp_input else 2
@@ -257,6 +227,13 @@ class Sim2DriveModel(nn.Module):
         self.extra_sensor_encoder = nn.Sequential(nn.Linear(extra_size, 128), nn.ReLU(inplace=True),
                                                   nn.Linear(128, extra_sensor_channels), nn.ReLU(inplace=True))
 
+    # Initialize discriminator with correct feature dimension
+    if self.config.transformer_decoder_join:
+      disc_input_dim = self.config.gru_input_size
+    else:
+      disc_input_dim = self.backbone.num_features
+    self.discriminator = FeatureDiscriminator(input_dim=disc_input_dim).to(device)
+
     # pid controllers for waypoints
     self.turn_controller = t_u.PIDController(k_p=config.turn_kp,
                                              k_i=config.turn_ki,
@@ -313,60 +290,7 @@ class Sim2DriveModel(nn.Module):
     if self.config.tp_attention:
       nn.init.uniform_(self.tp_pos_embed)
 
-  def forward(self, rgb, lidar_bev, target_point, ego_vel, command, rgb_real, domain_label=None, target_point_next=None):
-    # Process RGB through adapter and DINOv2 extractor
-    adapted_virtual = self.adapter(rgb)
-
-    # DINOv2 forward returns a dict with 'x_norm_clstoken' and 'x_norm_patchtokens'
-    # We want the CLS token which has shape (B, 768)
-    with torch.no_grad():  # DINOv2 is frozen
-      dinov2_output = self.extractor.forward_features(adapted_virtual)
-
-    # Extract CLS token first - DINOv2 returns a dictionary
-    if isinstance(dinov2_output, dict):
-      if 'x_norm_clstoken' in dinov2_output:
-        cls_token = dinov2_output['x_norm_clstoken']  # Shape: (B, 768)
-      elif 'x_prenorm' in dinov2_output:
-        # Alternative: use prenorm output and extract CLS token
-        x_prenorm = dinov2_output['x_prenorm']
-        cls_token = x_prenorm[:, 0]  # First token is CLS
-      else:
-        # Debug: print available keys
-        print(f"DEBUG: DINOv2 output keys: {dinov2_output.keys()}")
-        print(f"DEBUG: DINOv2 output shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in dinov2_output.items()]}")
-        raise ValueError(f"Unexpected DINOv2 output keys: {dinov2_output.keys()}")
-    else:
-      # If direct tensor, take the first token (CLS token)
-      print(f"DEBUG: DINOv2 output is tensor with shape: {dinov2_output.shape}")
-      cls_token = dinov2_output[:, 0]  # Shape: (B, 768)
-
-    # Ensure cls_token has the correct shape
-    if cls_token.dim() != 2 or cls_token.size(1) != 768:
-      print(f"ERROR: cls_token has shape {cls_token.shape}, expected (B, 768)")
-      print(f"DEBUG: adapted_virtual shape: {adapted_virtual.shape}")
-      print(f"DEBUG: dinov2_output type: {type(dinov2_output)}")
-      raise RuntimeError(f"Unexpected cls_token shape: {cls_token.shape}, expected (B, 768)")
-
-    # Discriminator gets detached features to avoid backprop through extractor
-    # disc_output: (B, 1), rgb_real: (B,) with 0=sim, 1=real
-    disc_output = self.discriminator(cls_token.detach())
-    # Note: discriminator already has sigmoid, so use BCE instead of BCEWithLogits
-    disc_loss = F.binary_cross_entropy(disc_output.squeeze(1), rgb_real.float())
-
-    # Anti-discriminator loss: adapter tries to fool discriminator
-    # We want the adapter to make sim images look real (push towards label=1)
-    anti_disc_output = self.discriminator(cls_token)  # No detach - gradients flow to adapter
-    # Flip the labels: try to make discriminator predict opposite of truth
-    anti_disc_loss = F.binary_cross_entropy(anti_disc_output.squeeze(1), 1.0 - rgb_real.float())
-
-    # Prediction head output (auxiliary task classifier)
-    pred_domain = self.prediction_head(cls_token)  # Shape: (B, num_classes)
-
-    # Calculate prediction loss if domain_label is provided
-    pred_loss = None
-    if domain_label is not None:
-      pred_loss = F.cross_entropy(pred_domain, domain_label.long())
-
+  def forward(self, rgb, lidar_bev, target_point, ego_vel, command, target_point_next=None):
     bs = rgb.shape[0]
     if self.config.two_tp_input:
       target_point = torch.cat((target_point, target_point_next), axis=1)
@@ -414,6 +338,7 @@ class Sim2DriveModel(nn.Module):
 
       if self.config.transformer_decoder_join:
         fused_features = torch.permute(fused_features, (0, 2, 1))
+
         if self.config.use_wp_gru:
           if self.config.multi_wp_output:
             joined_wp_features = self.join(self.wp_query.repeat(bs, 1, 1), fused_features)
@@ -492,15 +417,27 @@ class Sim2DriveModel(nn.Module):
     pred_bounding_box = None
     if self.config.detect_boxes:
       pred_bounding_box = self.head(bev_feature_grid)
-              
+
+    # Pool fused_features to (B, C) for discriminator input
+    if fused_features.dim() == 4:  # (B, C, H, W)
+        pooled_features = torch.mean(fused_features, dim=[2, 3])  # (B, C)
+    elif fused_features.dim() == 3:  # (B, N, C) from transformer_decoder_join
+        pooled_features = torch.mean(fused_features, dim=1)  # (B, C)
+    else:  # Already (B, C)
+        pooled_features = fused_features
+
+    disc_output = self.discriminator(pooled_features.detach())
+    anti_disc_loss = F.binary_cross_entropy(disc_output.squeeze(1), torch.zeros_like(disc_output.squeeze(1)))
+
+
     return pred_wp, pred_target_speed, pred_checkpoint, pred_semantic, pred_bev_semantic, pred_depth, \
-      pred_bounding_box, attention_weights, pred_wp_1, selected_path, disc_loss, anti_disc_loss, pred_loss, pred_domain
+      pred_bounding_box, attention_weights, pred_wp_1, selected_path, anti_disc_loss
 
   def compute_loss(self, pred_wp, pred_target_speed, pred_checkpoint, pred_semantic, pred_bev_semantic, pred_depth,
-                   pred_bounding_box, pred_wp_1, selected_path, pred_domain, waypoint_label, target_speed_label, checkpoint_label,
+                   pred_bounding_box, pred_wp_1, selected_path, waypoint_label, target_speed_label, checkpoint_label,
                    semantic_label, bev_semantic_label, depth_label, center_heatmap_label, wh_label, yaw_class_label,
                    yaw_res_label, offset_label, velocity_label, brake_target_label, pixel_weight_label,
-                   avg_factor_label, domain_label=None):
+                   avg_factor_label):
     loss = {}
     if self.config.use_wp_gru:
       if self.config.multi_wp_output:
@@ -546,12 +483,6 @@ class Sim2DriveModel(nn.Module):
                                  brake_target_label, pixel_weight_label, avg_factor_label)
 
       loss.update(loss_bbox)
-
-    # Prediction head loss - auxiliary classification task
-    # pred_domain: (B, num_classes), domain_label: (B,)
-    if domain_label is not None and pred_domain is not None:
-      loss_pred = F.cross_entropy(pred_domain, domain_label.long())
-      loss.update({'loss_prediction': loss_pred})
 
     return loss
 

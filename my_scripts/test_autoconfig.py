@@ -1,19 +1,27 @@
 import os
 import sys
 
-# Add team_code directory to path for imports
+# Add directories to path for imports
 script_dir = os.path.dirname(os.path.abspath(__file__))
-team_code_dir = os.path.join(os.path.dirname(script_dir), 'team_code')
-sys.path.insert(0, team_code_dir)
+parent_dir = os.path.dirname(script_dir)
+# Add parent dir for package imports (from team_code import ...)
+sys.path.insert(0, parent_dir)
+# Also add team_code for internal imports within team_code (import transfuser_utils)
+sys.path.insert(0, os.path.join(parent_dir, 'team_code'))
 
-from data import CARLA_Data
-from config import GlobalConfig
+# Add CARLA Python API to path
+carla_root = os.path.join(parent_dir, 'carla')
+sys.path.insert(0, os.path.join(carla_root, 'PythonAPI'))
+sys.path.insert(0, os.path.join(carla_root, 'PythonAPI', 'carla'))
+
+from sim2drive.data import CARLA_Navsim_Data
+from team_code.config import GlobalConfig
 config = GlobalConfig()
 navsim_path = '/fs/nexus-projects/sim2real/aliu/navsim_data/navsim_STRAIGHT'
 # Pass the scenario folder directly, not individual routes
 # The data loader expects: root -> scenario folders -> route folders
 navsim_roots = [navsim_path]
-navsim_train_set = CARLA_Data(root=navsim_roots,
+navsim_train_set = CARLA_Navsim_Data(root=navsim_roots,
                                   config=config,
                                   estimate_class_distributions=False,
                                   estimate_sem_distribution=False,

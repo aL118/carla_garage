@@ -7,9 +7,9 @@
 #SBATCH --error=/fs/nexus-scratch/aliu1237/carla_garage/my_dump/slurm_output/%x.out.%j        # indicates a file to redirect STDERR to; %j is the jobid
 
 ## Scale ntasks with gpus
-#SBATCH --mem=120gb                                               # memory required by job; if unit is not specified MB will be assumed
-#SBATCH --gres=gpu:rtxa6000:4
-#SBATCH --ntasks=16
+#SBATCH --mem=120gb
+#SBATCH --gres=gpu:rtxa5000:8
+#SBATCH --ntasks=8
 
 # set up notification settings for failures
 ##SBATCH --mail-user=angelaliu9805@gmail.com
@@ -49,7 +49,7 @@ export ROUTES=${WORK_DIR}/leaderboard/data/longest6.xml
 export REPETITIONS=1
 
 export CHALLENGE_TRACK_CODENAME=SENSORS
-export RUN_NAME="quicktest_large"
+export RUN_NAME="ablation_baseline"
 export CHECKPOINT_ENDPOINT=${WORK_DIR}/results/${RUN_NAME}.json
 
 export TEAM_AGENT=${WORK_DIR}/team_code/sensor_agent.py
@@ -122,7 +122,7 @@ python -u ${LEADERBOARD_ROOT}/leaderboard/leaderboard_evaluator_local.py \
 --agent-config=${TEAM_CONFIG} \
 --debug=${DEBUG_CHALLENGE} \
 --port=${PORT} \
---scenario-limit=1 \
+--scenario-limit=3 \
 --resume=${RESUME} > $WORK_DIR/logs/${RUN_NAME}_evaluation.log 2>&1 &
 
 EVALUATOR_PID=$!
